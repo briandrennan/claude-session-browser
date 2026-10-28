@@ -1,0 +1,27 @@
+# Session browser configuration.
+listen: 127.0.0.1:8484
+# Tags, notes and AI suggestions are stored in <data_dir>/enrichment.yml
+data_dir: ./data
+
+# Time-versioned API price table. Created from the built-in default on first run;
+# commit it. `csb pricing check -write` appends dated rows when prices change.
+pricing_file: ./pricing.yml
+
+# Your own transcripts.
+sources:
+  - name: brian
+    path: ~/.claude
+
+# Team folders written by `csb export -dest <dir> -name <person>`; every
+# <dir>/<person>/projects becomes a source named <person>.
+team_dirs: []
+#  - /srv/claude-usage
+
+# Seed vocabulary for session classification; add more from the UI.
+default_tags: [exploration, feature-dev, bug-fixing, performance-engineering, simplification, code-review, testing]
+
+# Tag suggestions. Uses ANTHROPIC_API_KEY (or an `ant auth login` profile).
+classifier:
+  model: claude-haiku-5-5
+  auto: true       # suggest tags for untagged sessions once idle
+  min_idle: 30m

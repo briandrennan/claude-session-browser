@@ -1,0 +1,50 @@
+# API list prices in USD per million tokens, versioned over time.
+#
+# A row applies to every model id that starts with `match` (the longest match wins),
+# from `from` (inclusive, UTC date) until the next row with the same `match`.
+# A row without `from` applies from the beginning of time. Each API response is
+# priced with the row in effect at the response's timestamp, so when a price
+# changes, append a new row with a `from` date instead of editing the old one.
+# `csb pricing check` compares this table against the live pricing page and can
+# append rows for any changes it finds (`csb pricing check -write`).
+#
+# Modifiers:
+#   long_above / long_*: alternate prices when a request's prompt (input + cache
+#                        reads + cache writes) exceeds long_above tokens.
+#   fast_multiplier:     applied to responses with usage.speed == "fast".
+#   geo_multipliers:     applied by usage.inference_geo (e.g. US-only inference).
+#
+# Seeded from https://platform.claude.com/docs/en/about-claude/pricing on 2026-10-28.
+
+web_search_per_1k:
+  - price: 10
+
+models:
+  - {match: claude-fable-5-1, label: Fable 5.1, input: 10, cache_write_5m: 12.50, cache_write_1h: 20, cache_read: 0.25, output: 50, geo_multipliers: {us: 1.1}}
+  - {match: claude-mythos-5-1, label: Mythos 5.1, input: 10, cache_write_5m: 12.50, cache_write_1h: 20, cache_read: 0.25, output: 50, geo_multipliers: {us: 1.1}}
+  - {match: claude-fable-5, label: Fable 5, input: 10, cache_write_5m: 12.50, cache_write_1h: 20, cache_read: 1, output: 50, geo_multipliers: {us: 1.1}}
+  - {match: claude-mythos-5, label: Mythos 5, input: 10, cache_write_5m: 12.50, cache_write_1h: 20, cache_read: 1, output: 50, geo_multipliers: {us: 1.1}}
+  - {match: claude-opus-5-5, label: Opus 5.5, input: 4, cache_write_5m: 5, cache_write_1h: 8, cache_read: 0.20, output: 20, fast_multiplier: 2, geo_multipliers: {us: 1.1}}
+  - {match: claude-opus-5, label: Opus 5, input: 5, cache_write_5m: 6.25, cache_write_1h: 10, cache_read: 0.50, output: 25, fast_multiplier: 2, geo_multipliers: {us: 1.1}}
+  - {match: claude-opus-4-8, label: Opus 4.8, input: 5, cache_write_5m: 6.25, cache_write_1h: 10, cache_read: 0.50, output: 25, fast_multiplier: 2, geo_multipliers: {us: 1.1}}
+  - {match: claude-opus-4-7, label: Opus 4.7, input: 5, cache_write_5m: 6.25, cache_write_1h: 10, cache_read: 0.50, output: 25, geo_multipliers: {us: 1.1}}
+  - {match: claude-opus-4-6, label: Opus 4.6, input: 5, cache_write_5m: 6.25, cache_write_1h: 10, cache_read: 0.50, output: 25, geo_multipliers: {us: 1.1}}
+  - {match: claude-opus-4-5, label: Opus 4.5, input: 5, cache_write_5m: 6.25, cache_write_1h: 10, cache_read: 0.50, output: 25}
+  - {match: claude-opus-4-1, label: Opus 4.1, input: 15, cache_write_5m: 18.75, cache_write_1h: 30, cache_read: 1.50, output: 75}
+  - {match: claude-opus-4, label: Opus 4, input: 15, cache_write_5m: 18.75, cache_write_1h: 30, cache_read: 1.50, output: 75}
+  - {match: claude-sonnet-5-5, label: Sonnet 5.5, input: 2, cache_write_5m: 2.50, cache_write_1h: 4, cache_read: 0.10, output: 10, geo_multipliers: {us: 1.1}}
+  - {match: claude-sonnet-5, label: Sonnet 5, input: 2, cache_write_5m: 2.50, cache_write_1h: 4, cache_read: 0.20, output: 10, geo_multipliers: {us: 1.1}}
+  - {match: claude-sonnet-4-6, label: Sonnet 4.6, input: 3, cache_write_5m: 3.75, cache_write_1h: 6, cache_read: 0.30, output: 15, geo_multipliers: {us: 1.1}}
+  # Sonnet 4.5 / 4 with the 1M-context beta billed prompts over 200K tokens at a
+  # premium. The current pricing page no longer lists it; values are from the
+  # earlier page and should be verified against your invoices.
+  - {match: claude-sonnet-4-5, label: Sonnet 4.5, input: 3, cache_write_5m: 3.75, cache_write_1h: 6, cache_read: 0.30, output: 15,
+     long_above: 200000, long_input: 6, long_cache_write_5m: 7.50, long_cache_write_1h: 12, long_cache_read: 0.60, long_output: 22.50}
+  - {match: claude-sonnet-4, label: Sonnet 4, input: 3, cache_write_5m: 3.75, cache_write_1h: 6, cache_read: 0.30, output: 15,
+     long_above: 200000, long_input: 6, long_cache_write_5m: 7.50, long_cache_write_1h: 12, long_cache_read: 0.60, long_output: 22.50}
+  - {match: claude-3-7-sonnet, label: Sonnet 3.7, input: 3, cache_write_5m: 3.75, cache_write_1h: 6, cache_read: 0.30, output: 15}
+  - {match: claude-haiku-5-5, label: Haiku 5.5, input: 0.10, cache_write_5m: 0.125, cache_write_1h: 0.20, cache_read: 0.01, output: 0.50,
+     long_above: 100000, long_input: 0.50, long_cache_write_5m: 0.625, long_cache_write_1h: 1, long_cache_read: 0.05, long_output: 2.50,
+     geo_multipliers: {us: 1.1}}
+  - {match: claude-haiku-4-5, label: Haiku 4.5, input: 1, cache_write_5m: 1.25, cache_write_1h: 2, cache_read: 0.10, output: 5}
+  - {match: claude-3-5-haiku, label: Haiku 3.5, input: 0.80, cache_write_5m: 1, cache_write_1h: 1.60, cache_read: 0.08, output: 4}

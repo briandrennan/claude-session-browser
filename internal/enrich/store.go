@@ -76,6 +76,8 @@ func (s *Store) Session(id string) SessionInfo {
 		out := SessionInfo{Tags: append([]string{}, si.Tags...), Note: si.Note}
 		if si.Suggestion != nil {
 			sg := *si.Suggestion
+			// YAML drops empty lists, so a reloaded suggestion can have nil tags.
+			sg.Tags = append([]string{}, sg.Tags...)
 			out.Suggestion = &sg
 		}
 		return out

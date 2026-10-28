@@ -20,7 +20,7 @@ export function SuggestionReview({ sessionId, suggestion, onResolved, compact }:
     const res = await api.resolveSuggestion(sessionId, action)
     onResolved(res.tags, res.suggestion)
   }
-  const tags = [...suggestion.tags, ...(suggestion.newTag ? [suggestion.newTag] : [])]
+  const tags = [...(suggestion.tags ?? []), ...(suggestion.newTag ? [suggestion.newTag] : [])]
   const chips = tags.map((t) => (
     <span
       key={t}

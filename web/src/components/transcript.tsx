@@ -161,7 +161,9 @@ export const TranscriptRow = memo(function TranscriptRow({ e, agent, agentColor,
       <div className={cn('flex gap-3', agent && 'border-l-2 pl-3')} style={agent ? { borderColor: agentColor } : undefined}>
         <div className="min-w-0 flex-1">
           {agent && (e.kind === 'prompt' || e.kind === 'command') && (
-            <div className="mb-1 inline-flex items-center gap-1 text-xs font-medium" style={{ color: agentColor }}>
+            // Text wears text tokens; the series color rides on a swatch beside it (and the rule).
+            <div className="mb-1 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <span className="size-2 shrink-0 rounded-full" style={{ background: agentColor }} aria-hidden />
               <Bot className="size-3" /> {agent.type} · {agent.description}
             </div>
           )}

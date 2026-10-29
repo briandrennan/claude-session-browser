@@ -26,7 +26,7 @@ export function SuggestionReview({ sessionId, suggestion, onResolved, compact }:
       key={t}
       className={cn(
         'rounded-full border border-dashed px-2 py-0.5 text-xs text-muted-foreground',
-        t === suggestion.newTag && 'border-[var(--series-7)] text-[var(--series-7)]',
+        t === suggestion.newTag && 'border-[var(--highlight)] text-[var(--highlight)]',
       )}
     >
       {t === suggestion.newTag ? `+ ${t}` : t}
@@ -47,7 +47,7 @@ export function SuggestionReview({ sessionId, suggestion, onResolved, compact }:
       <Tooltip>
         <TooltipTrigger asChild>
           <div className="flex flex-wrap items-center gap-1" onClick={(e) => e.stopPropagation()}>
-            <Sparkles className="size-3 text-[var(--series-7)]" />
+            <Sparkles className="size-3 text-[var(--highlight)]" />
             {chips}
             {buttons}
           </div>
@@ -58,7 +58,7 @@ export function SuggestionReview({ sessionId, suggestion, onResolved, compact }:
   }
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed px-3 py-2 text-sm">
-      <Sparkles className="size-4 text-[var(--series-7)]" />
+      <Sparkles className="size-4 text-[var(--highlight)]" />
       <span className="text-muted-foreground">Suggested</span>
       {chips}
       <span className="text-xs text-muted-foreground">— {suggestion.rationale}</span>
@@ -125,7 +125,7 @@ export function ClassifyButton({ label, request, status: initial, onDone, disabl
           }
         }}
       >
-        <Sparkles className="text-[var(--series-7)]" />
+        <Sparkles className="text-[var(--highlight)]" />
         {busy ? `Classifying… ${status!.done} done, ${status!.queued + status!.running} left` : label}
       </Button>
       {status && status.cost > 0 && <span className="font-mono text-xs text-muted-foreground">spent {usd(status.cost)}</span>}

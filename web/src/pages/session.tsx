@@ -15,8 +15,12 @@ import { useFetch } from '@/hooks/use-fetch'
 import { api, promptTokens, totalTokens, type AgentInfo, type Insight, type SessionDetail } from '@/lib/api'
 import { dateTime, duration, modelLabel, tokens, usd } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { useThemeContext } from '@/theme/provider'
 
-const agentColor = (i: number) => `var(--series-${(i % 7) + 1})`
+// Subagents are nominal (no rank), so they take Distinct slot hues in launch order in both
+// chart modes; tonal would imply an order that isn't there. CSS vars, so theme previews apply
+// without re-rendering. Never cycled: past the theme's slot count agents get the neutral.
+const agentColor = (i: number, slots: number) => (i < slots ? `var(--series-${i + 1})` : 'var(--series-other)')
 
 export function SessionPage() {
   const { id = '' } = useParams()
@@ -185,7 +189,8 @@ type ConversationProps = {
 function Conversation({ d, visible, allActors, setActors, onOpenAgent }: ConversationProps) {
   const [showThinking, setShowThinking] = useState(true)
   const [limit, setLimit] = useState(400)
-  const agents = useMemo(() => new Map(d.agents.map((a, i) => [a.id, { a, color: agentColor(i + 1) }])), [d.agents])
+  const slots = useThemeContext().shown.chart.categorical.length
+  const agents = useMemo(() => new Map(d.agents.map((a, i) => [a.id, { a, color: agentColor(i, slots) }])), [d.agents, slots])
   const events = useMemo(() => d.events.filter((e) => visible.has(e.actor) || (!agents.has(e.actor) && !allActors.includes(e.actor) && visible.has(SYSTEM))), [d.events, visible, agents, allActors])
 
   const counts = useMemo(() => {
@@ -271,6 +276,7 @@ function Conversation({ d, visible, allActors, setActors, onOpenAgent }: Convers
 
 function Agents({ d, labels, onOpenAgent }: { d: SessionDetail; labels: Record<string, string>; onOpenAgent: (id: string) => void }) {
   const main = d.main
+  const slots = useThemeContext().shown.chart.categorical.length
   const children = (parent: string) => d.agents.filter((a) => (a.parentId ?? MAIN) === parent)
   const renderNode = (a: AgentInfo, depth: number, color?: string): React.ReactNode => (
     <div key={a.id} className="flex flex-col gap-2" style={{ marginLeft: depth * 20 }}>
@@ -305,7 +311,7 @@ function Agents({ d, labels, onOpenAgent }: { d: SessionDetail; labels: Record<s
           </details>
         )}
       </div>
-      {children(a.id).map((c) => renderNode(c, depth + 1, agentColor(d.agents.indexOf(c) + 1)))}
+      {children(a.id).map((c) => renderNode(c, depth + 1, agentColor(d.agents.indexOf(c), slots)))}
     </div>
   )
   return (
@@ -389,7 +395,7 @@ function Tools({ d }: { d: SessionDetail }) {
                 <TableCell>
                   <div className="flex items-center gap-2">
                     <div className="h-2 flex-1 rounded-full bg-muted">
-                      <div className="h-2 rounded-full bg-[var(--series-1)]" style={{ width: `${(t.calls / max) * 100}%` }} />
+                      <div className="h-2 rounded-full bg-[var(--sequential)]" style={{ width: `${(t.calls / max) * 100}%` }} />
                     </div>
                     <span className="w-8 text-right font-mono text-xs tabular-nums">{t.calls}</span>
                   </div>

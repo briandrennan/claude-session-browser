@@ -5,6 +5,18 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Session Browser</title>
+    <script>
+      // Paint the last committed theme before the app loads (written by applyTheme).
+      try {
+        const t = JSON.parse(localStorage.getItem('theme.paint'))
+        const root = document.documentElement
+        for (const [k, v] of Object.entries(t.vars)) root.style.setProperty(k, v)
+        root.classList.toggle('dark', t.mode === 'dark')
+        root.style.colorScheme = t.mode
+      } catch {
+        if (matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.classList.add('dark')
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

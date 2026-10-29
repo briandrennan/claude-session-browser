@@ -14,7 +14,9 @@ import { formatMetric, UsageChart, type Metric } from '@/components/usage-chart'
 import { useFetch } from '@/hooks/use-fetch'
 import { api, promptTokens, totalTokens, type ClassifierStatus, type Summary, type UsageResult } from '@/lib/api'
 import { duration, modelLabel, sessionHref, tokens, usd } from '@/lib/format'
+import { bestInk, mix, parseColor } from '@/lib/color'
 import { PRESETS, presetRange, type Preset } from '@/lib/range'
+import { useThemeContext } from '@/theme/provider'
 
 type Group = 'project' | 'model' | 'project_model' | 'source'
 const GROUPS: { value: Group; label: string }[] = [
@@ -57,7 +59,11 @@ const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart
 export function DashboardPage() {
   const { preset, group, metric, range, set } = useDashboardParams()
   const meta = useFetch(() => api.meta(), [])
-  const usage = useFetch(() => api.usage(range, group), [range, group])
+  // The grouping travels with its data: useFetch keeps the previous result while the next one
+  // loads, and charting old rows under the new grouping flashes a wrong chart and drops
+  // Distinct slot assignments.
+  const usage = useFetch(() => api.usage(range, group).then((data) => ({ group, data })), [range, group])
+  const shownGroup = usage.data?.group ?? group
   const matrix = useFetch(() => api.usage(range, 'project_model'), [range])
   const sessions = useFetch(() => api.sessions(range), [range])
   const [vocab, setVocab] = useState<string[]>()
@@ -66,14 +72,14 @@ export function DashboardPage() {
 
   const groupLabel = useCallback(
     (g: string) => {
-      if (group === 'model') return modelLabel(g, labels)
-      if (group === 'project_model') {
+      if (shownGroup === 'model') return modelLabel(g, labels)
+      if (shownGroup === 'project_model') {
         const [p, m] = g.split(' · ')
         return `${p} · ${modelLabel(m ?? '', labels)}`
       }
       return g
     },
-    [group, labels],
+    [shownGroup, labels],
   )
 
   const archivedCount = sessions.data?.filter((s) => s.archived).length ?? 0
@@ -112,14 +118,14 @@ export function DashboardPage() {
         </ToggleGroup>
       </div>
 
-      <KpiRow usage={usage.data} sessions={sessions.data} />
+      <KpiRow usage={usage.data?.data} sessions={sessions.data} />
 
       <Card>
         <CardHeader className="flex flex-row flex-wrap items-start justify-between gap-3">
           <div>
             <CardTitle>{METRICS.find((m) => m.value === metric)?.label} over time</CardTitle>
             <CardDescription>
-              By {group === 'source' ? 'person' : GROUPS.find((g) => g.value === group)?.label.toLowerCase()} · list price at time of use, subagents included
+              By {shownGroup === 'source' ? 'person' : GROUPS.find((g) => g.value === shownGroup)?.label.toLowerCase()} · list price at time of use, subagents included
             </CardDescription>
           </div>
           <ToggleGroup type="single" variant="outline" size="sm" value={metric} onValueChange={(v) => v && set({ metric: v })}>
@@ -141,7 +147,13 @@ export function DashboardPage() {
             </p>
           )}
           {usage.data ? (
-            <UsageChart data={usage.data} metric={metric} hourly={usage.data.buckets[0]?.length > 10} label={groupLabel} />
+            <UsageChart
+              data={usage.data.data}
+              metric={metric}
+              hourly={usage.data.data.buckets[0]?.length > 10}
+              grouping={usage.data.group}
+              label={groupLabel}
+            />
           ) : (
             <Skeleton className="h-[300px] w-full" />
           )}
@@ -284,6 +296,7 @@ function Matrix({ data, labels }: { data: UsageResult; labels: Record<string, st
     const sort = (m: Map<string, number>) => [...m.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).map(([k]) => k)
     return { projects: sort(pTot).slice(0, 12), models: sort(mTot), cells, max: Math.max(0, ...cells.values()) }
   }, [data])
+  const ink = useCellInk()
   if (!projects.length) return <p className="text-sm text-muted-foreground">No usage in this range.</p>
   return (
     <div className="overflow-x-auto">
@@ -305,14 +318,15 @@ function Matrix({ data, labels }: { data: UsageResult; labels: Record<string, st
               {models.map((m) => {
                 const v = cells.get(`${p} · ${m}`) ?? 0
                 const t = max ? v / max : 0
+                const pct = Math.round(12 + t * 88)
                 return (
                   <td
                     key={m}
                     title={`${p} · ${modelLabel(m, labels)}: ${usd(v)}`}
                     className="h-9 min-w-20 rounded-sm px-2 text-right font-mono text-xs tabular-nums"
                     style={{
-                      background: v ? `color-mix(in oklab, var(--series-1) ${Math.round(12 + t * 88)}%, var(--card))` : 'var(--muted)',
-                      color: t > 0.5 ? 'white' : undefined,
+                      background: v ? `color-mix(in oklab, var(--sequential) ${pct}%, var(--card))` : 'var(--muted)',
+                      color: v ? ink(pct) : undefined,
                     }}
                   >
                     {v ? usd(v) : ''}
@@ -325,6 +339,23 @@ function Matrix({ data, labels }: { data: UsageResult; labels: Record<string, st
       </table>
     </div>
   )
+}
+
+// Text color for a heatmap cell: recompute the CSS mix (`color-mix(in oklab, sequential N%,
+// card)`) for the shown theme and take whichever of the theme's two inks — foreground, or the
+// card color as the inverse — has the higher WCAG contrast on it (black/white if neither
+// reaches 4.5:1). A fixed "white past 50%" fails pastel ramps: Catppuccin Mocha's sequential
+// is light, so white on it measured 2.1:1, as did base light at 56%.
+function useCellInk() {
+  const { ui } = useThemeContext().shown
+  return useMemo(() => {
+    const seq = parseColor(ui.sequential)
+    const card = parseColor(ui.card)
+    const inks = [ui.foreground, ui.card].map(parseColor).filter((c): c is string => !!c)
+    // One ink per whole percent the cells can use.
+    const table = seq && card && inks.length ? Array.from({ length: 101 }, (_, p) => bestInk(mix(card, seq, p / 100), inks)) : []
+    return (pct: number) => table[pct]
+  }, [ui.sequential, ui.card, ui.foreground])
 }
 
 function Friction({ sessions }: { sessions: Summary[] }) {
@@ -426,7 +457,7 @@ function TagBreakdown({ sessions, classifier, onClassify, onDone }: TagBreakdown
           <div key={tag} className="grid grid-cols-[10rem_1fr_auto] items-center gap-3 text-sm">
             <span className={tag === '(unclassified)' ? 'text-muted-foreground italic' : ''}>{tag}</span>
             <div className="h-2 rounded-full bg-muted">
-              <div className="h-2 rounded-full bg-[var(--series-1)]" style={{ width: `${max ? (r.cost / max) * 100 : 0}%` }} />
+              <div className="h-2 rounded-full bg-[var(--sequential)]" style={{ width: `${max ? (r.cost / max) * 100 : 0}%` }} />
             </div>
             <span className="font-mono text-xs tabular-nums text-muted-foreground">
               {formatMetric(r.cost, 'cost')} · {r.n} sessions · {duration(r.active)}

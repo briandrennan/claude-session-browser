@@ -157,7 +157,7 @@ export function PricingPage() {
                         {i === 0 && (
                           <div className="flex items-center gap-2">
                             <span className="font-medium">{r.label}</span>
-                            {used && <span className="size-1.5 rounded-full bg-[var(--series-1)]" title="seen in your transcripts" />}
+                            {used && <span className="size-1.5 rounded-full bg-[var(--sequential)]" title="seen in your transcripts" />}
                           </div>
                         )}
                         {i === 0 && <div className="font-mono text-[10px] text-muted-foreground">{match}*</div>}

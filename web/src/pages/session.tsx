@@ -199,10 +199,12 @@ function Conversation({ d, visible, allActors, setActors, onOpenAgent }: Convers
     next.has(a) ? next.delete(a) : next.add(a)
     setActors(next)
   }
+  const allVisible = allActors.every((a) => visible.has(a))
   const chip = (a: string, label: React.ReactNode, color?: string) => (
     <button
       key={a}
-      onClick={() => toggle(a)}
+      onClick={(e) => (e.altKey || e.metaKey ? setActors(new Set([a])) : toggle(a))}
+      title="Click to toggle · Alt-click to show only this actor"
       className={cn(
         'inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs transition-colors',
         visible.has(a) ? 'border-foreground/30 bg-secondary text-foreground' : 'text-muted-foreground opacity-60 hover:opacity-100',
@@ -230,8 +232,11 @@ function Conversation({ d, visible, allActors, setActors, onOpenAgent }: Convers
           ),
         )}
         {chip(SYSTEM, 'System & context')}
-        <Button variant="ghost" size="xs" onClick={() => setActors(new Set(allActors))}>
+        <Button variant="ghost" size="xs" disabled={allVisible} onClick={() => setActors(new Set(allActors))}>
           All
+        </Button>
+        <Button variant="ghost" size="xs" disabled={!visible.size} onClick={() => setActors(new Set())}>
+          None
         </Button>
         <label className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
           <Checkbox checked={showThinking} onCheckedChange={(v) => setShowThinking(!!v)} /> thinking
@@ -251,7 +256,7 @@ function Conversation({ d, visible, allActors, setActors, onOpenAgent }: Convers
             />
           )
         })}
-        {!events.length && <p className="py-10 text-center text-sm text-muted-foreground">No events for the selected actors.</p>}
+        {!events.length && <p className="py-10 text-center text-sm text-muted-foreground">{visible.size ? 'No events for the selected actors.' : 'No actors selected. Pick one above to see its events.'}</p>}
         {events.length > limit && (
           <div className="py-4 text-center">
             <Button variant="outline" size="sm" onClick={() => setLimit((l) => l + 1000)}>

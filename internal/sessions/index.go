@@ -25,6 +25,7 @@ type entry struct {
 	summary Summary
 	points  []UsagePoint // deduplicated across sessions (resumed/forked sessions repeat history)
 	raw     []UsagePoint
+	prompts []Event // archived sessions only (path == "")
 }
 
 // Index keeps summaries and usage points for every session in memory and
@@ -38,7 +39,9 @@ type Index struct {
 	lastRun time.Time
 	refresh sync.Mutex
 
-	pricesMod time.Time
+	pricesMod  time.Time
+	archiveSig map[string]string // by source name
+	archived   map[string]*entry // by "<source>/<id>"
 }
 
 func NewIndex(cfg *config.Config) (*Index, error) {
@@ -93,7 +96,8 @@ func (ix *Index) Refresh(maxAge time.Duration) error {
 	}
 	var jobs []job
 	found := map[string]bool{}
-	for _, src := range ix.cfg.AllSources() {
+	sources := ix.cfg.AllSources()
+	for _, src := range sources {
 		mains, _ := filepath.Glob(filepath.Join(src.Path, "projects", "*", "*.jsonl"))
 		legacy := map[string][]string{}
 		var sessionsFiles []string
@@ -131,6 +135,8 @@ func (ix *Index) Refresh(maxAge time.Duration) error {
 	results := make(chan *entry, len(jobs))
 	sem := make(chan struct{}, runtime.NumCPU())
 	var wg sync.WaitGroup
+	var skipMu sync.Mutex
+	skipped := map[string]bool{} // transcripts that produced no entry this run
 	for _, j := range jobs {
 		wg.Add(1)
 		sem <- struct{}{}
@@ -140,9 +146,15 @@ func (ix *Index) Refresh(maxAge time.Duration) error {
 			d, pts, err := parser.Parse(j.path, j.source, j.extra)
 			if err != nil {
 				log.Printf("parse %s: %v", j.path, err)
+				skipMu.Lock()
+				skipped[j.id] = true
+				skipMu.Unlock()
 				return
 			}
 			if d.Summary.Start.IsZero() {
+				skipMu.Lock()
+				skipped[j.id] = true
+				skipMu.Unlock()
 				return // empty transcript
 			}
 			results <- &entry{path: j.path, source: j.source, extra: j.extra, sig: j.sig, summary: d.Summary, raw: pts}
@@ -151,9 +163,25 @@ func (ix *Index) Refresh(maxAge time.Duration) error {
 	wg.Wait()
 	close(results)
 
+	// Transcripts with no entry (empty, or unreadable mid-write) don't count as
+	// live, so their sessions stay listed from the prompt history.
+	live := map[string]bool{}
+	ix.mu.RLock()
+	for k := range found {
+		if e, ok := ix.entries[k]; !skipped[k] || ok && e.path != "" {
+			live[k] = true
+		}
+	}
+	ix.mu.RUnlock()
+	archived := ix.loadArchives(sources, live)
+
 	ix.mu.Lock()
 	for e := range results {
 		ix.entries[e.source+"/"+e.summary.ID] = e
+	}
+	for k, e := range archived { // never collides with a transcript: loadArchives skips found ids
+		found[k] = true
+		ix.entries[k] = e
 	}
 	for k := range ix.entries {
 		if !found[k] {
@@ -167,6 +195,52 @@ func (ix *Index) Refresh(maxAge time.Duration) error {
 		log.Printf("indexed %d changed sessions (%d total) in %s", len(jobs), len(ix.entries), time.Since(start).Round(time.Millisecond))
 	}
 	return nil
+}
+
+// loadArchives returns archived sessions for every source, rebuilding a
+// source's set only when its history or sessions-index files changed.
+func (ix *Index) loadArchives(sources []config.Source, found map[string]bool) map[string]*entry {
+	if ix.archiveSig == nil {
+		ix.archiveSig, ix.archived = map[string]string{}, map[string]*entry{}
+	}
+	for _, src := range sources {
+		files := archiveFiles(src.Path)
+		var sb strings.Builder
+		for _, f := range files {
+			if fi, err := os.Stat(f); err == nil {
+				fmt.Fprintf(&sb, "%s:%d:%d;", f, fi.Size(), fi.ModTime().UnixNano())
+			}
+		}
+		// Transcripts appearing or disappearing also change the archived set.
+		live := map[string]bool{}
+		var ids []string
+		for k := range found {
+			if id, ok := strings.CutPrefix(k, src.Name+"/"); ok {
+				live[id] = true
+				ids = append(ids, id)
+			}
+		}
+		sort.Strings(ids)
+		sb.WriteString(strings.Join(ids, ","))
+		sig := sb.String()
+		if ix.archiveSig[src.Name] == sig {
+			continue
+		}
+		ix.archiveSig[src.Name] = sig
+		for k := range ix.archived {
+			if strings.HasPrefix(k, src.Name+"/") {
+				delete(ix.archived, k)
+			}
+		}
+		for k, e := range loadArchived(src.Name, src.Path, live) {
+			ix.archived[k] = e
+		}
+	}
+	out := make(map[string]*entry, len(ix.archived))
+	for k, e := range ix.archived {
+		out[k] = e
+	}
+	return out
 }
 
 // dedupe drops usage points whose message id already appeared in an earlier
@@ -259,6 +333,9 @@ func (ix *Index) Detail(id string) (*Detail, error) {
 	if e == nil {
 		return nil, os.ErrNotExist
 	}
+	if e.path == "" {
+		return archivedDetail(e), nil
+	}
 	d, _, err := parser.Parse(e.path, e.source, e.extra)
 	return d, err
 }
@@ -299,6 +376,20 @@ func (ix *Index) Usage(q UsageQuery) UsageResult {
 			return time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), 0, 0, 0, q.Loc)
 		}
 		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, q.Loc)
+	}
+	// Open-ended ranges ("All") start at the first recorded activity, not 1970.
+	ix.mu.RLock()
+	var first time.Time
+	for _, e := range ix.entries {
+		for _, p := range e.points {
+			if first.IsZero() || p.Time.Before(first) {
+				first = p.Time
+			}
+		}
+	}
+	ix.mu.RUnlock()
+	if q.To.Sub(q.From) > 366*24*time.Hour && first.After(q.From) {
+		q.From = first
 	}
 	var res UsageResult
 	for t := trunc(q.From); !t.After(q.To); {

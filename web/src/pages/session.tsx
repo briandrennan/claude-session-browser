@@ -67,7 +67,7 @@ export function SessionPage() {
           {s.gitBranch && <span className="font-mono text-xs">⎇ {s.gitBranch}</span>}
           <span>{dateTime(s.start)} → {dateTime(s.end)}</span>
           <span>{duration(s.activeSeconds)} active</span>
-          <span className="font-mono text-xs">v{s.version}</span>
+          {s.version && <span className="font-mono text-xs">v{s.version}</span>}
           <span className="font-mono text-xs">{s.source}</span>
           <span className="font-mono text-xs">{s.id}</span>
         </div>
@@ -101,47 +101,63 @@ export function SessionPage() {
         />
       </div>
 
-      <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-        <Stat label="API-equivalent cost" value={usd(s.cost)} sub={d.models.map((m) => `${modelLabel(m.model, labels)} ${usd(m.cost)}`).join(' · ')} />
-        <Stat label="Tokens" value={tokens(totalTokens(s.usage))} sub={`${tokens(s.usage.output)} output · ${tokens(s.usage.thinking)} thinking`} />
-        <Stat label="Cache hit rate" value={prompt ? `${Math.round((s.usage.cacheRead / prompt) * 100)}%` : '–'} sub={`${tokens(s.usage.cacheWrite5m + s.usage.cacheWrite1h)} written`} />
-        <Stat label="Prompts" value={`${s.userPrompts}`} sub={`${s.usage.messages} API responses`} />
-        <Stat label="Tool calls" value={`${d.tools.reduce((a, t) => a + t.calls, 0)}`} sub={`${s.toolErrors} failed · ${s.rejections} rejected`} />
-        <Stat label="Subagents" value={`${d.agents.length}`} sub={d.agents.length ? usd(d.agents.reduce((a, x) => a + x.cost, 0)) : undefined} />
-      </div>
+      {s.archived && (
+        <div className="flex items-start gap-2 rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+          <Info className="mt-0.5 size-4 shrink-0" />
+          <p>
+            Claude Code deleted this transcript (see <code className="font-mono text-xs">cleanupPeriodDays</code>). Only the {s.userPrompts}{' '}
+            {s.userPrompts === 1 ? 'prompt' : 'prompts'} you typed survive, from your prompt history; responses, tool calls and cost are gone.
+          </p>
+        </div>
+      )}
 
-      <Tabs value={tab} onValueChange={setTab}>
-        <TabsList className="flex-wrap">
-          <TabsTrigger value="conversation">Conversation</TabsTrigger>
-          <TabsTrigger value="agents">Agents ({d.agents.length + 1})</TabsTrigger>
-          <TabsTrigger value="tools">Tools ({d.tools.length})</TabsTrigger>
-          <TabsTrigger value="skills">Skills ({d.skills.length})</TabsTrigger>
-          <TabsTrigger value="memories">Memories ({d.memories.length})</TabsTrigger>
-          <TabsTrigger value="insights">
-            Insights ({d.insights.length})
-            {d.insights.some((i) => i.severity !== 'info') && <span className="size-1.5 rounded-full bg-[var(--warning)]" />}
-          </TabsTrigger>
-        </TabsList>
+      {s.archived ? (
+        <Conversation d={d} visible={visible} allActors={allActors} setActors={setActors} onOpenAgent={openAgent} />
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+            <Stat label="API-equivalent cost" value={usd(s.cost)} sub={d.models.map((m) => `${modelLabel(m.model, labels)} ${usd(m.cost)}`).join(' · ')} />
+            <Stat label="Tokens" value={tokens(totalTokens(s.usage))} sub={`${tokens(s.usage.output)} output · ${tokens(s.usage.thinking)} thinking`} />
+            <Stat label="Cache hit rate" value={prompt ? `${Math.round((s.usage.cacheRead / prompt) * 100)}%` : '–'} sub={`${tokens(s.usage.cacheWrite5m + s.usage.cacheWrite1h)} written`} />
+            <Stat label="Prompts" value={`${s.userPrompts}`} sub={`${s.usage.messages} API responses`} />
+            <Stat label="Tool calls" value={`${d.tools.reduce((a, t) => a + t.calls, 0)}`} sub={`${s.toolErrors} failed · ${s.rejections} rejected`} />
+            <Stat label="Subagents" value={`${d.agents.length}`} sub={d.agents.length ? usd(d.agents.reduce((a, x) => a + x.cost, 0)) : undefined} />
+          </div>
 
-        <TabsContent value="conversation" className="mt-4">
-          <Conversation d={d} visible={visible} allActors={allActors} setActors={setActors} onOpenAgent={openAgent} />
-        </TabsContent>
-        <TabsContent value="agents" className="mt-4">
-          <Agents d={d} labels={labels} onOpenAgent={openAgent} />
-        </TabsContent>
-        <TabsContent value="tools" className="mt-4">
-          <Tools d={d} />
-        </TabsContent>
-        <TabsContent value="skills" className="mt-4">
-          <Skills d={d} onJump={jumpTo} />
-        </TabsContent>
-        <TabsContent value="memories" className="mt-4">
-          <Memories d={d} />
-        </TabsContent>
-        <TabsContent value="insights" className="mt-4">
-          <Insights insights={d.insights} onJump={jumpTo} />
-        </TabsContent>
-      </Tabs>
+          <Tabs value={tab} onValueChange={setTab}>
+            <TabsList className="flex-wrap">
+              <TabsTrigger value="conversation">Conversation</TabsTrigger>
+              <TabsTrigger value="agents">Agents ({d.agents.length + 1})</TabsTrigger>
+              <TabsTrigger value="tools">Tools ({d.tools.length})</TabsTrigger>
+              <TabsTrigger value="skills">Skills ({d.skills.length})</TabsTrigger>
+              <TabsTrigger value="memories">Memories ({d.memories.length})</TabsTrigger>
+              <TabsTrigger value="insights">
+                Insights ({d.insights.length})
+                {d.insights.some((i) => i.severity !== 'info') && <span className="size-1.5 rounded-full bg-[var(--warning)]" />}
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="conversation" className="mt-4">
+              <Conversation d={d} visible={visible} allActors={allActors} setActors={setActors} onOpenAgent={openAgent} />
+            </TabsContent>
+            <TabsContent value="agents" className="mt-4">
+              <Agents d={d} labels={labels} onOpenAgent={openAgent} />
+            </TabsContent>
+            <TabsContent value="tools" className="mt-4">
+              <Tools d={d} />
+            </TabsContent>
+            <TabsContent value="skills" className="mt-4">
+              <Skills d={d} onJump={jumpTo} />
+            </TabsContent>
+            <TabsContent value="memories" className="mt-4">
+              <Memories d={d} />
+            </TabsContent>
+            <TabsContent value="insights" className="mt-4">
+              <Insights insights={d.insights} onJump={jumpTo} />
+            </TabsContent>
+          </Tabs>
+        </>
+      )}
     </div>
   )
 }

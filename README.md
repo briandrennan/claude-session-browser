@@ -74,5 +74,12 @@ US-only inference (`inference_geo: us`, ×1.1) are applied per response.
 | Memories | `CLAUDE.md` / `.claude/rules/*.md` / `memory/*.md` paths in injected context, attachments, and Read/Write/Edit calls |
 | Friction | tool errors, rejections, `[Request interrupted by user]`, API errors, compactions, repeated identical calls, very large tool results, idle gaps, low cache hit rate |
 
+Claude Code deletes transcripts after `cleanupPeriodDays` (30 by default; raise it in
+`~/.claude/settings.json` to keep history). Sessions whose transcript is gone are still listed
+as **archived**, rebuilt from `history.jsonl` (the prompts you typed, by `sessionId`) and any
+leftover `projects/*/sessions-index.json` (title, branch, start/end). They have no responses,
+usage or cost, and are not auto-classified. On the usage timeline they count toward the
+Sessions metric (model `(archived)`), placed at their prompt timestamps.
+
 Per-tool token figures are estimates (≈4 characters per token); session and model costs use
 the exact usage that the API reported.

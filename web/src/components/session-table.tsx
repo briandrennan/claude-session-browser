@@ -161,7 +161,14 @@ export function SessionTable({ sessions, vocabulary, labels, onUpdate, onVocabul
               <TableRow key={`${s.source}/${s.id}`} className="cursor-pointer" onClick={() => navigate(sessionHref(s.id, s.title))}>
                 <TableCell className="font-mono text-xs whitespace-nowrap text-muted-foreground">{dateTime(s.start)}</TableCell>
                 <TableCell className="max-w-[22rem]">
-                  <div className="truncate font-medium">{s.title}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate font-medium">{s.title}</span>
+                    {s.archived && (
+                      <Badge variant="outline" className="shrink-0 font-normal text-muted-foreground" title="Transcript deleted by Claude Code; rebuilt from prompt history">
+                        archived
+                      </Badge>
+                    )}
+                  </div>
                   {s.firstPrompt && s.firstPrompt !== s.title && (
                     <div className="truncate text-xs text-muted-foreground">{s.firstPrompt}</div>
                   )}
@@ -210,7 +217,9 @@ export function SessionTable({ sessions, vocabulary, labels, onUpdate, onVocabul
                 <TableCell className="text-right font-mono text-xs tabular-nums">
                   {friction(s) > 0 ? <span className="text-[var(--critical)]">{friction(s)}</span> : <span className="text-muted-foreground">0</span>}
                 </TableCell>
-                <TableCell className="text-right font-mono text-xs font-medium tabular-nums">{usd(s.cost)}</TableCell>
+                <TableCell className="text-right font-mono text-xs font-medium tabular-nums">
+                  {s.archived ? <span className="text-muted-foreground">–</span> : usd(s.cost)}
+                </TableCell>
               </TableRow>
             ))}
             {!rows.length && (

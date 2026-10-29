@@ -76,6 +76,8 @@ export function DashboardPage() {
     [group, labels],
   )
 
+  const archivedCount = sessions.data?.filter((s) => s.archived).length ?? 0
+
   const updateSession = (id: string, patch: Partial<Summary>) =>
     sessions.setData((list) => list?.map((s) => (s.id === id ? { ...s, ...patch } : s)))
 
@@ -129,6 +131,15 @@ export function DashboardPage() {
           </ToggleGroup>
         </CardHeader>
         <CardContent>
+          {metric !== 'sessions' && archivedCount > 0 && (
+            <p className="mb-3 text-xs text-muted-foreground">
+              {archivedCount} archived {archivedCount === 1 ? 'session has' : 'sessions have'} no usage data left (Claude Code deleted the
+              transcripts), so {archivedCount === 1 ? 'it is' : 'they are'} not in this chart.{' '}
+              <button className="underline hover:text-foreground" onClick={() => set({ metric: 'sessions' })}>
+                Show sessions
+              </button>
+            </p>
+          )}
           {usage.data ? (
             <UsageChart data={usage.data} metric={metric} hourly={usage.data.buckets[0]?.length > 10} label={groupLabel} />
           ) : (
@@ -241,10 +252,16 @@ function KpiRow({ usage, sessions }: { usage?: UsageResult; sessions?: Summary[]
   const cacheRead = usage.rows.reduce((a, r) => a + r.usage.cacheRead, 0)
   const active = sessions.reduce((a, s) => a + s.activeSeconds, 0)
   const agents = sessions.reduce((a, s) => a + s.subagents, 0)
+  const priced = sessions.filter((s) => !s.archived).length
+  const archived = sessions.length - priced
   return (
     <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
-      <Kpi label="API-equivalent cost" value={usd(cost)} sub={sessions.length ? `${usd(cost / sessions.length)} / session` : undefined} />
-      <Kpi label="Sessions" value={`${sessions.length}`} sub={`${agents} subagents launched`} />
+      <Kpi label="API-equivalent cost" value={usd(cost)} sub={priced ? `${usd(cost / priced)} / session` : undefined} />
+      <Kpi
+        label="Sessions"
+        value={`${sessions.length}`}
+        sub={archived ? `${archived} archived · ${agents} subagents` : `${agents} subagents launched`}
+      />
       <Kpi label="Active time" value={duration(active)} sub="gaps capped at 5 min" />
       <Kpi label="Tokens processed" value={tokens(all)} sub={`${tokens(output)} output`} />
       <Kpi label="Cache hit rate" value={prompt ? `${Math.round((cacheRead / prompt) * 100)}%` : '–'} sub="cache reads / prompt tokens" />
@@ -264,7 +281,7 @@ function Matrix({ data, labels }: { data: UsageResult; labels: Record<string, st
       pTot.set(p, (pTot.get(p) ?? 0) + r.cost)
       mTot.set(m, (mTot.get(m) ?? 0) + r.cost)
     }
-    const sort = (m: Map<string, number>) => [...m.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
+    const sort = (m: Map<string, number>) => [...m.entries()].filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]).map(([k]) => k)
     return { projects: sort(pTot).slice(0, 12), models: sort(mTot), cells, max: Math.max(0, ...cells.values()) }
   }, [data])
   if (!projects.length) return <p className="text-sm text-muted-foreground">No usage in this range.</p>
@@ -368,7 +385,7 @@ type TagBreakdownProps = {
 
 function TagBreakdown({ sessions, classifier, onClassify, onDone }: TagBreakdownProps) {
   const unclassified = sessions.filter(
-    (s) => !s.tags.length && s.userPrompts > 0 && (!s.suggestion || s.suggestion.status === 'error'),
+    (s) => !s.tags.length && s.userPrompts > 0 && !s.archived && (!s.suggestion || s.suggestion.status === 'error'),
   ).length
   const pending = sessions.filter((s) => s.suggestion?.status === 'pending').length
   const rows = useMemo(() => {

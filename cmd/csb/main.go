@@ -160,7 +160,7 @@ func runClassify(ctx context.Context, cfg *config.Config, ix *sessions.Index, es
 			break
 		}
 		info := es.Session(s.ID)
-		if s.UserPrompts > 0 && len(info.Tags) == 0 && (info.Suggestion == nil || *redo || info.Suggestion.Status == "error") {
+		if s.UserPrompts > 0 && !s.Archived && len(info.Tags) == 0 && (info.Suggestion == nil || *redo || info.Suggestion.Status == "error") {
 			ids = append(ids, s.ID)
 		}
 	}

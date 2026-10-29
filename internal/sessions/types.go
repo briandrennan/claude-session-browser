@@ -73,6 +73,9 @@ type Summary struct {
 	Skills        []string  `json:"skills"`
 	Tags          []string  `json:"tags"`
 	Note          string    `json:"note,omitempty"`
+	// Archived sessions have no transcript left (Claude Code cleaned it up);
+	// they are rebuilt from the prompt history and carry no usage or cost.
+	Archived bool `json:"archived,omitempty"`
 }
 
 // ToolResult is attached to the tool_use event that produced it.

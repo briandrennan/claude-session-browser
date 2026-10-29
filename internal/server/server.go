@@ -234,7 +234,7 @@ func (s *Server) classify(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, sum := range s.index.Summaries(body.From, body.To) {
 			info := s.enrich.Session(sum.ID)
-			if len(info.Tags) == 0 && sum.UserPrompts > 0 && (info.Suggestion == nil || info.Suggestion.Status == "error") {
+			if len(info.Tags) == 0 && sum.UserPrompts > 0 && !sum.Archived && (info.Suggestion == nil || info.Suggestion.Status == "error") {
 				ids = append(ids, sum.ID)
 			}
 		}

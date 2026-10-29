@@ -119,7 +119,7 @@ func (r *Runner) enqueueIdle() {
 	cutoff := time.Now().Add(-r.minIdle)
 	var ids []string
 	for _, s := range r.ix.Summaries(time.Time{}, time.Time{}) {
-		if s.End.After(cutoff) || s.UserPrompts == 0 {
+		if s.End.After(cutoff) || s.UserPrompts == 0 || s.Archived {
 			continue
 		}
 		info := r.store.Session(s.ID)

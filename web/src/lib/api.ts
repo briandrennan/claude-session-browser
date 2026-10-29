@@ -36,6 +36,7 @@ export type Summary = {
   skills: string[]
   tags: string[]
   note?: string
+  archived?: boolean
   suggestion?: Suggestion
 }
 

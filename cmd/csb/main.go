@@ -24,7 +24,11 @@ import (
 	"github.com/bdrennan/claude-session-browser/web"
 )
 
-const usage = `usage: csb [-config config.yml] <command> [flags]
+const usage = `usage: csb [-config config.yml] [-listen addr] <command> [flags]
+
+  -config   path to config file (default config.yml)
+  -listen   address for serve, overriding the config's listen:
+            host:port, or a bare port for 127.0.0.1:<port>
 
 commands:
   serve            run the web UI (default)
@@ -37,6 +41,7 @@ commands:
 
 func main() {
 	cfgPath := flag.String("config", "config.yml", "path to config file")
+	listen := flag.String("listen", "", "serve address (host:port or port), overrides the config")
 	flag.Usage = func() { fmt.Fprint(os.Stderr, usage) }
 	flag.Parse()
 	args := flag.Args()
@@ -48,6 +53,12 @@ func main() {
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
 		log.Fatal(err)
+	}
+	if *listen != "" {
+		cfg.Listen = *listen
+		if !strings.Contains(*listen, ":") {
+			cfg.Listen = "127.0.0.1:" + *listen
+		}
 	}
 	// export does not need the index.
 	if cmd == "export" {

@@ -94,7 +94,14 @@ export type PricingInfo = {
   pageUrl: string
 }
 
-export type ToolResult = { text: string; chars: number; isError: boolean; kind?: string }
+export type ToolResult = { text: string; chars: number; isError: boolean; kind?: string; truncated?: boolean }
+
+export type ToolCallFull = {
+  toolId: string
+  name: string
+  input: unknown
+  result?: { text: string; chars: number; isError: boolean; truncated?: boolean } | null
+}
 
 export type SessionEvent = {
   uuid: string
@@ -107,6 +114,7 @@ export type SessionEvent = {
   toolId?: string
   summary?: string
   input?: unknown
+  inputTruncated?: boolean
   result?: ToolResult
   model?: string
   usage?: Usage
@@ -150,7 +158,25 @@ export type SkillUse = {
   uses: { t: string; actor: string; args?: string; uuid: string }[]
 }
 
-export type MemoryUse = { path: string; kind: string; ops: Record<string, number>; tokensEst: number; first: string }
+export type MemoryAccess = {
+  t: string
+  op: 'loaded' | 'read' | 'write' | 'edit' | string
+  actor: string
+  uuid: string
+  toolId?: string
+  content?: string
+  unchanged?: boolean
+  truncated?: boolean
+}
+
+export type MemoryUse = {
+  path: string
+  kind: string
+  ops: Record<string, number>
+  tokensEst: number
+  first: string
+  accesses?: MemoryAccess[]
+}
 
 export type Insight = {
   kind: string
@@ -208,6 +234,7 @@ export const api = {
   meta: () => req<Meta>('/api/meta'),
   sessions: (r: Range) => req<Summary[]>(`/api/sessions?${rangeParams(r)}`),
   session: (id: string) => req<SessionDetail>(`/api/sessions/${id}`),
+  toolCall: (id: string, toolId: string) => req<ToolCallFull>(`/api/sessions/${id}/tools/${encodeURIComponent(toolId)}`),
   usage: (r: Range, group: string) =>
     req<UsageResult>(`/api/usage?${rangeParams(r)}&group=${group}&tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`),
   setEnrichment: (id: string, tags: string[], note = '') =>

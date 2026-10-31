@@ -1,5 +1,7 @@
 import { memo, useState } from 'react'
-import { Bot } from 'lucide-react'
+import { Bot, ChevronDown, ChevronRight } from 'lucide-react'
+import { Collapsible, ToolCallDetail, ToolResultView } from '@/components/tool-call'
+import { callStatus, hasInput as hasInputValue, statusBg, useFullCall } from '@/lib/tool-call'
 import type { AgentInfo, SessionEvent, Usage } from '@/lib/api'
 import { time, tokens } from '@/lib/format'
 import { cn } from '@/lib/utils'
@@ -7,34 +9,6 @@ import { cn } from '@/lib/utils'
 export const USER = 'user'
 export const MAIN = 'main'
 export const SYSTEM = 'system'
-
-const PREVIEW_LINES = 4
-
-function lines(s: string) {
-  return s.replace(/\s+$/, '').split('\n')
-}
-
-function Collapsible({ text, className, previewLines = PREVIEW_LINES }: { text: string; className?: string; previewLines?: number }) {
-  const [open, setOpen] = useState(false)
-  const all = lines(text)
-  const shown = open ? all : all.slice(0, previewLines)
-  const hidden = all.length - shown.length
-  return (
-    <div className={className}>
-      <pre className="font-mono text-xs leading-relaxed break-words whitespace-pre-wrap">{shown.join('\n')}</pre>
-      {hidden > 0 && (
-        <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setOpen(true)}>
-          … +{hidden} lines (click to expand)
-        </button>
-      )}
-      {open && all.length > previewLines && (
-        <button className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setOpen(false)}>
-          collapse
-        </button>
-      )}
-    </div>
-  )
-}
 
 function UsageNote({ u }: { u: Usage }) {
   const written = u.cacheWrite5m + u.cacheWrite1h
@@ -56,11 +30,13 @@ type RowProps = {
   e: SessionEvent
   agent?: AgentInfo
   agentColor?: string
+  sessionId: string
   showThinking: boolean
+  toolInputs: boolean
   onOpenAgent: (id: string) => void
 }
 
-export const TranscriptRow = memo(function TranscriptRow({ e, agent, agentColor, showThinking, onOpenAgent }: RowProps) {
+export const TranscriptRow = memo(function TranscriptRow({ e, agent, agentColor, sessionId, showThinking, toolInputs, onOpenAgent }: RowProps) {
   const body = (() => {
     switch (e.kind) {
       case 'prompt':
@@ -97,49 +73,8 @@ export const TranscriptRow = memo(function TranscriptRow({ e, agent, agentColor,
             {e.text ? <Collapsible text={e.text} previewLines={3} className="min-w-0 flex-1 [&_pre]:font-sans" /> : <span>Thinking…</span>}
           </div>
         )
-      case 'tool_use': {
-        const r = e.result
-        const status = !r ? 'pending' : r.kind === 'rejected' ? 'rejected' : r.isError ? 'error' : 'ok'
-        return (
-          <div className="flex flex-col gap-1">
-            <div className="flex gap-2.5">
-              <Dot
-                className={cn(
-                  status === 'ok' && 'bg-[var(--good)]',
-                  status === 'error' && 'bg-[var(--critical)]',
-                  status === 'rejected' && 'bg-[var(--warning)]',
-                  status === 'pending' && 'bg-muted-foreground',
-                )}
-              />
-              <div className="min-w-0 flex-1 font-mono text-sm break-all">
-                <span className="font-semibold">{e.tool}</span>
-                {e.summary && <span className="text-muted-foreground">({e.summary})</span>}
-                {e.agentLink && (
-                  <button
-                    onClick={() => onOpenAgent(e.agentLink!)}
-                    className="ml-2 inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-sans text-xs hover:bg-muted"
-                  >
-                    <Bot className="size-3" /> view agent transcript
-                  </button>
-                )}
-              </div>
-            </div>
-            {r && (
-              <div className={cn('flex gap-2 pl-4', status === 'error' ? 'text-[var(--critical)]' : 'text-muted-foreground')}>
-                <span className="font-mono text-xs select-none">└</span>
-                {status === 'rejected' ? (
-                  <span className="font-mono text-xs text-[var(--serious)]">User rejected this call</span>
-                ) : (
-                  <div className="min-w-0 flex-1">
-                    <Collapsible text={r.text || '(no output)'} />
-                    {r.chars > 2000 && <div className="font-mono text-[10px]">≈{tokens(r.chars / 4)} tokens of output</div>}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )
-      }
+      case 'tool_use':
+        return <ToolRow e={e} sessionId={sessionId} toolInputs={toolInputs} onOpenAgent={onOpenAgent} />
       case 'compact':
         return <SystemLine label="context compacted" text={e.text} />
       case 'notification':
@@ -187,6 +122,70 @@ function SystemLine({ label, text, critical }: { label: string; text?: string; c
       </button>
       {open && text && (
         <pre className="mt-1 max-h-80 overflow-auto rounded bg-muted/50 p-2 font-mono text-[11px] break-words whitespace-pre-wrap">{text}</pre>
+      )}
+    </div>
+  )
+}
+
+function ToolRow({ e, sessionId, toolInputs, onOpenAgent }: { e: SessionEvent; sessionId: string; toolInputs: boolean; onOpenAgent: (id: string) => void }) {
+  const [rowOpen, setRowOpen] = useState<boolean | null>(null)
+  const call = useFullCall(sessionId, e.toolId)
+  const r = e.result
+  const status = callStatus(e)
+  const hasInput = hasInputValue(e.input)
+  const open = hasInput && (rowOpen ?? toolInputs)
+  const Chevron = open ? ChevronDown : ChevronRight
+  const title = (
+    <>
+      <span className="font-semibold">{e.tool}</span>
+      {e.summary && <span className="text-muted-foreground">({e.summary})</span>}
+    </>
+  )
+  return (
+    <div id={e.toolId ? `tool-${e.toolId}` : undefined} className="flex scroll-mt-28 flex-col gap-1">
+      <div className="flex gap-2.5">
+        <Dot className={statusBg[status]} />
+        <div className="min-w-0 flex-1 font-mono text-sm break-all">
+          {hasInput ? (
+            <button
+              className="inline-flex max-w-full items-start gap-1 text-left hover:text-foreground"
+              aria-expanded={open}
+              title="Show tool input"
+              onClick={() => setRowOpen(!open)}
+            >
+              <Chevron className="mt-1 size-3 shrink-0 text-muted-foreground" />
+              <span>{title}</span>
+            </button>
+          ) : (
+            title
+          )}
+          {e.agentLink && (
+            <button
+              onClick={() => onOpenAgent(e.agentLink!)}
+              className="ml-2 inline-flex items-center gap-1 rounded border px-1.5 py-0.5 font-sans text-xs hover:bg-muted"
+            >
+              <Bot className="size-3" /> view agent transcript
+            </button>
+          )}
+        </div>
+      </div>
+      {open && (
+        <div className="ml-4 rounded-md border bg-muted/30 p-2">
+          <ToolCallDetail e={e} sessionId={sessionId} parts="input" call={call} />
+        </div>
+      )}
+      {r && (
+        <div className={cn('flex gap-2 pl-4', status === 'error' ? 'text-[var(--critical)]' : 'text-muted-foreground')}>
+          <span className="font-mono text-xs select-none">└</span>
+          {status === 'rejected' ? (
+            <span className="font-mono text-xs text-[var(--serious)]">User rejected this call</span>
+          ) : (
+            <div className="min-w-0 flex-1">
+              <ToolResultView r={r} call={call} />
+              {r.chars > 2000 && <div className="font-mono text-[10px]">≈{tokens(r.chars / 4)} tokens of output</div>}
+            </div>
+          )}
+        </div>
       )}
     </div>
   )

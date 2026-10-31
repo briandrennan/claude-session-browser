@@ -21,6 +21,9 @@ const (
 	maxResult = 8 << 10
 	maxInput  = 16 << 10
 
+	maxAccesses = 200     // memory accesses kept per path
+	maxFullText = 2 << 20 // cap on a tool result served in full
+
 	activeGapCap = 5 * time.Minute
 	idleGap      = 15 * time.Minute
 	bigResult    = 25_000 // chars, roughly 6k tokens
@@ -125,9 +128,7 @@ func (p *Parser) Parse(path, source string, extraAgents []string) (*Detail, []Us
 	if err := st.readFile(path, ""); err != nil {
 		return nil, nil, err
 	}
-	agentFiles, _ := filepath.Glob(filepath.Join(strings.TrimSuffix(path, ".jsonl"), "subagents", "agent-*.jsonl"))
-	agentFiles = append(agentFiles, extraAgents...)
-	for _, af := range agentFiles {
+	for _, af := range agentFiles(path, extraAgents) {
 		aid := strings.TrimPrefix(strings.TrimSuffix(filepath.Base(af), ".jsonl"), "agent-")
 		ag := st.agent(aid)
 		var meta agentMeta
@@ -144,6 +145,12 @@ func (p *Parser) Parse(path, source string, extraAgents []string) (*Detail, []Us
 	return st.d, st.points, nil
 }
 
+// agentFiles lists a session's subagent transcripts: the subagents directory plus legacy top-level files.
+func agentFiles(path string, extra []string) []string {
+	files, _ := filepath.Glob(filepath.Join(strings.TrimSuffix(path, ".jsonl"), "subagents", "agent-*.jsonl"))
+	return append(files, extra...)
+}
+
 type state struct {
 	p          *Parser
 	d          *Detail
@@ -154,6 +161,7 @@ type state struct {
 	tools      map[string]*ToolStat
 	skills     map[string]*SkillUse
 	memories   map[string]*MemoryUse
+	lastLoaded map[string]string // memory path -> content of its previous load
 	agents     map[string]*AgentInfo
 	agentOrder []string
 	callSigs   map[string][]string
@@ -174,6 +182,7 @@ func newState(p *Parser, id, source string) *state {
 		tools:      map[string]*ToolStat{},
 		skills:     map[string]*SkillUse{},
 		memories:   map[string]*MemoryUse{},
+		lastLoaded: map[string]string{},
 		agents:     map[string]*AgentInfo{},
 		callSigs:   map[string][]string{},
 		rates:      map[string]map[string]bool{},
@@ -290,6 +299,7 @@ var (
 	reCommandArgs = regexp.MustCompile(`(?s)<command-args>(.*?)</command-args>`)
 	reTag         = regexp.MustCompile(`(?s)<(local-command-stdout|bash-stdout|bash-stderr|bash-input)>(.*?)</(local-command-stdout|bash-stdout|bash-stderr|bash-input)>`)
 	reReminder    = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+	reAgentMsg    = regexp.MustCompile(`(?s)<agent-message\b.*?</agent-message>`)
 	reMemoryPath  = regexp.MustCompile(`(/[^\s"'<>()]*?(?:/memory/[^\s"'<>()]+\.md|CLAUDE(?:\.local)?\.md|/\.claude/rules/[^\s"'<>()]+\.md))`)
 )
 
@@ -330,7 +340,13 @@ func (st *state) user(rl *rawLine, actor string, inAgent bool) {
 
 func (st *state) userText(rl *rawLine, text, actor string, inAgent bool) {
 	s := &st.d.Summary
-	st.scanMemoryText(text, "loaded", rl.Timestamp)
+	// Only injected context loads memory: meta lines and <system-reminder> blocks, not paths
+	// a person or a parent agent wrote in a prompt, nor subagent reports relayed inside reminders.
+	injected := text
+	if !rl.IsMeta {
+		injected = strings.Join(reReminder.FindAllString(text, -1), "\n")
+	}
+	st.scanMemoryText(reAgentMsg.ReplaceAllString(injected, ""), "loaded", rl)
 	trimmed := strings.TrimSpace(text)
 	switch {
 	case rl.IsMeta:
@@ -379,7 +395,7 @@ func (st *state) userText(rl *rawLine, text, actor string, inAgent bool) {
 
 func (st *state) toolResult(rl *rawLine, b block) {
 	text := blockContentText(b.Content)
-	res := &ToolResult{Text: clip(text, maxResult), Chars: len(text), IsError: b.IsError}
+	res := &ToolResult{Text: clip(text, maxResult), Chars: len(text), IsError: b.IsError, Truncated: len(text) > maxResult}
 	if strings.HasPrefix(text, "The user doesn't want to proceed") || strings.Contains(text, "user rejected") || strings.Contains(text, "Permission to use") && strings.Contains(text, "denied") {
 		res.Kind = "rejected"
 		st.d.Summary.Rejections++
@@ -474,6 +490,7 @@ func (st *state) assistant(rl *rawLine, actor string) {
 			if len(b.Input) <= maxInput {
 				e.Input = b.Input
 			} else {
+				e.InputTruncated = true
 				e.Input, _ = json.Marshal(map[string]string{"_truncated": clip(string(b.Input), maxInput)})
 			}
 			st.toolUse(rl, actor, b)
@@ -520,8 +537,7 @@ func (st *state) toolUse(rl *rawLine, actor string, b block) {
 			if op == "" {
 				op = "edit"
 			}
-			mu := st.memory(fp, rl.Timestamp)
-			mu.Ops[op]++
+			mu := st.access(fp, MemoryAccess{Time: rl.Timestamp, Op: op, Actor: actor, UUID: rl.UUID, ToolID: b.ID})
 			if c := str("content"); c != "" {
 				mu.TokensEst = int64(len(c) / 4)
 			}
@@ -552,7 +568,28 @@ func (st *state) memory(path string, t time.Time) *MemoryUse {
 	return mu
 }
 
-func (st *state) scanMemoryText(text string, op string, t time.Time) {
+// access counts an op on a memory path and records it (up to maxAccesses per path).
+// Loaded content identical to the path's previous load is replaced by the Unchanged flag.
+func (st *state) access(path string, a MemoryAccess) *MemoryUse {
+	mu := st.memory(path, a.Time)
+	mu.Ops[a.Op]++
+	if a.Op == "loaded" && a.Content != "" {
+		if prev, ok := st.lastLoaded[path]; ok && prev == a.Content {
+			a.Content, a.Unchanged = "", true
+		} else {
+			st.lastLoaded[path] = a.Content
+			if len(a.Content) > maxText {
+				a.Content, a.Truncated = clip(a.Content, maxText), true
+			}
+		}
+	}
+	if len(mu.Accesses) < maxAccesses {
+		mu.Accesses = append(mu.Accesses, a)
+	}
+	return mu
+}
+
+func (st *state) scanMemoryText(text string, op string, rl *rawLine) {
 	if !strings.Contains(text, ".md") {
 		return
 	}
@@ -562,16 +599,56 @@ func (st *state) scanMemoryText(text string, op string, t time.Time) {
 			continue
 		}
 		seen[m] = true
-		mu := st.memory(m, t)
-		mu.Ops[op]++
-		if idx := strings.Index(text, "Contents of "+m); idx >= 0 && mu.TokensEst == 0 {
-			rest := text[idx:]
-			if end := strings.Index(rest[len(m):], "\nContents of "); end > 0 {
-				rest = rest[:len(m)+end]
-			}
-			mu.TokensEst = int64(len(rest) / 4)
+		// A bare mention is not a load; the "Contents of <path>" header is.
+		idx := contentsIndex(text, m)
+		if idx < 0 {
+			continue
+		}
+		rest := text[idx:]
+		if end := strings.Index(rest[len(m):], "\nContents of "); end > 0 {
+			rest = rest[:len(m)+end]
+		}
+		tokens := int64(len(rest) / 4)
+		mu := st.access(m, MemoryAccess{Time: rl.Timestamp, Op: op, Actor: "system", UUID: rl.UUID, Content: memoryContent(text[idx+len("Contents of ")+len(m):])})
+		if mu.TokensEst == 0 {
+			mu.TokensEst = tokens
 		}
 	}
+}
+
+// contentsIndex finds the "Contents of <path>" header for exactly path m, skipping longer paths that
+// merely start with m: the path must be followed by a space, ':', '(', newline or the end of text.
+func contentsIndex(text, m string) int {
+	needle := "Contents of " + m
+	for off := 0; ; {
+		i := strings.Index(text[off:], needle)
+		if i < 0 {
+			return -1
+		}
+		i += off
+		end := i + len(needle)
+		if end == len(text) || strings.IndexByte(" :(\n\r", text[end]) >= 0 {
+			return i
+		}
+		off = i + 1
+	}
+}
+
+// memoryContent takes the text after a "Contents of <path>" header and returns the file body:
+// everything after the header line up to the next "Contents of" block or the end of the reminder.
+func memoryContent(rest string) string {
+	if i := strings.IndexByte(rest, '\n'); i >= 0 {
+		rest = rest[i+1:]
+	} else {
+		return ""
+	}
+	if i := strings.Index(rest, "\nContents of "); i >= 0 {
+		rest = rest[:i]
+	}
+	if i := strings.Index(rest, "</system-reminder>"); i >= 0 {
+		rest = rest[:i]
+	}
+	return strings.TrimSpace(rest)
 }
 
 func (st *state) attachment(rl *rawLine, actor string) {
@@ -581,10 +658,24 @@ func (st *state) attachment(rl *rawLine, actor string) {
 	}
 	typ, _ := a["type"].(string)
 	// Memory files surface in attachments under various shapes; walk every string.
-	if strings.Contains(typ, "memory") || strings.Contains(typ, "claude_md") || strings.Contains(typ, "nested") {
+	if typ == "instructions" {
+		files, _ := a["files"].([]any)
+		for _, f := range files {
+			fm, _ := f.(map[string]any)
+			path, _ := fm["path"].(string)
+			if !isMemoryPath(path) {
+				continue
+			}
+			content, _ := fm["content"].(string)
+			mu := st.access(path, MemoryAccess{Time: rl.Timestamp, Op: "loaded", Actor: "system", UUID: rl.UUID, Content: content})
+			if mu.TokensEst == 0 {
+				mu.TokensEst = int64(len(content) / 4)
+			}
+		}
+	} else if strings.Contains(typ, "memory") || strings.Contains(typ, "claude_md") || strings.Contains(typ, "nested") {
 		walkStrings(a, func(k, v string) {
 			if isMemoryPath(v) {
-				st.memory(v, rl.Timestamp).Ops["loaded"]++
+				st.access(v, MemoryAccess{Time: rl.Timestamp, Op: "loaded", Actor: "system", UUID: rl.UUID})
 			}
 		})
 	}
@@ -595,7 +686,7 @@ func (st *state) attachment(rl *rawLine, actor string) {
 		}
 	} else {
 		b, _ := json.Marshal(a)
-		ev.Text = clip(string(b), 2000)
+		ev.Text = clip(string(b), maxText)
 	}
 	if actor != "main" && actor != "sidechain" {
 		ev.Actor = actor
@@ -726,6 +817,7 @@ func (st *state) finish() {
 	sort.Slice(d.Skills, func(i, j int) bool { return d.Skills[i].Count > d.Skills[j].Count })
 	sort.Strings(s.Skills)
 	for _, mu := range st.memories {
+		mu.Accesses = nonNil(mu.Accesses)
 		d.Memories = append(d.Memories, *mu)
 	}
 	sort.Slice(d.Memories, func(i, j int) bool { return d.Memories[i].First.Before(d.Memories[j].First) })

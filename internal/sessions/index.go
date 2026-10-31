@@ -2,8 +2,10 @@ package sessions
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -338,6 +340,77 @@ func (ix *Index) Detail(id string) (*Detail, error) {
 	}
 	d, _, err := parser.Parse(e.path, e.source, e.extra)
 	return d, err
+}
+
+// ToolCall returns the unclipped input and result of one tool call, searching the
+// session's main transcript and its subagent transcripts.
+func (ix *Index) ToolCall(sessionID, toolID string) (*ToolCallFull, error) {
+	ix.mu.RLock()
+	var e *entry
+	for k, v := range ix.entries {
+		if k == sessionID || v.summary.ID == sessionID {
+			e = v
+			break
+		}
+	}
+	ix.mu.RUnlock()
+	if e == nil || e.path == "" || toolID == "" {
+		return nil, os.ErrNotExist
+	}
+	out := &ToolCallFull{ToolID: toolID}
+	var found bool
+	for _, f := range append([]string{e.path}, agentFiles(e.path, e.extra)...) {
+		done, err := scanToolCall(f, toolID, out, &found)
+		if err != nil && f == e.path {
+			return nil, err
+		}
+		if done {
+			break
+		}
+	}
+	if !found {
+		return nil, os.ErrNotExist
+	}
+	return out, nil
+}
+
+// scanToolCall fills out from the tool_use and tool_result blocks for toolID in one file;
+// it reports true once both have been seen.
+func scanToolCall(path, toolID string, out *ToolCallFull, found *bool) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	needle := []byte(toolID)
+	r := bufio.NewReaderSize(f, 1<<20)
+	for {
+		line, err := r.ReadBytes('\n')
+		if bytes.Contains(line, needle) {
+			var rl rawLine
+			var blocks []block
+			if json.Unmarshal(line, &rl) == nil && rl.Message != nil && json.Unmarshal(rl.Message.Content, &blocks) == nil {
+				for _, b := range blocks {
+					switch {
+					case (b.Type == "tool_use" || b.Type == "server_tool_use") && b.ID == toolID && !*found:
+						out.Name, out.Input, *found = b.Name, b.Input, true
+					case b.Type == "tool_result" && b.ToolUseID == toolID && out.Result == nil:
+						text := blockContentText(b.Content)
+						out.Result = &ToolResult{Text: clip(text, maxFullText), Chars: len(text), IsError: b.IsError, Truncated: len(text) > maxFullText}
+					}
+				}
+			}
+			if *found && out.Result != nil {
+				return true, nil
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				err = nil
+			}
+			return false, err
+		}
+	}
 }
 
 type UsageQuery struct {

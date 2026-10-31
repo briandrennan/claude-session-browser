@@ -15,6 +15,23 @@ make build          # pnpm build (web/) + go build -> bin/csb
 make dev            # Go API on :8484 + Vite on :5173 with hot reload
 ```
 
+### Ports
+
+The server listens on `listen` from `config.yml` (default `127.0.0.1:8484`). To use a different
+port without editing the config, pass `-listen` (a bare port binds `127.0.0.1`; `host:port` is
+used as given):
+
+```sh
+./bin/csb -listen 9090                  # http://127.0.0.1:9090
+./bin/csb -listen 0.0.0.0:9090          # every interface
+make run PORT=9090                      # build, then serve on 127.0.0.1:9090
+make dev PORT=9090 WEB_PORT=5174        # API on :9090, Vite on http://localhost:5174
+```
+
+`make dev` points the Vite `/api` proxy at `PORT` (via `CSB_PORT`), so set it there rather than
+in `config.yml` alone. Vite uses `--strictPort`: if `WEB_PORT` is taken it exits rather than
+picking another port.
+
 ## Team usage
 
 Each person exports their transcripts into a shared folder (a mount, synced drive, or a
@@ -71,7 +88,7 @@ US-only inference (`inference_geo: us`, ×1.1) are applied per response.
 | Subagents | `<session>/subagents/agent-<id>.jsonl` + `.meta.json` (type, description, parent `toolUseId`); legacy top-level `agent-*.jsonl` files are attached by `sessionId` |
 | Tool calls | `tool_use` blocks, results from `tool_result` blocks (`is_error`), rejection text |
 | Skills | `Skill` tool calls, plus `<command-name>` slash commands |
-| Memories | `CLAUDE.md` / `.claude/rules/*.md` / `memory/*.md` paths in injected context, attachments, and Read/Write/Edit calls |
+| Memories | `CLAUDE.md` / `.claude/rules/*.md` / `memory/*.md` files loaded as `Contents of <path>` in injected context (meta lines and `<system-reminder>` blocks, not prompts or relayed subagent reports) or `instructions` attachments, with their content; plus Read/Write/Edit calls on those paths |
 | Friction | tool errors, rejections, `[Request interrupted by user]`, API errors, compactions, repeated identical calls, very large tool results, idle gaps, low cache hit rate |
 
 Claude Code deletes transcripts after `cleanupPeriodDays` (30 by default; raise it in

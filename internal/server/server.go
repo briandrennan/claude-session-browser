@@ -43,6 +43,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/meta", s.meta)
 	mux.HandleFunc("GET /api/sessions", s.listSessions)
 	mux.HandleFunc("GET /api/sessions/{id}", s.getSession)
+	mux.HandleFunc("GET /api/sessions/{id}/tools/{toolId}", s.getToolCall)
 	mux.HandleFunc("PUT /api/sessions/{id}/enrichment", s.putEnrichment)
 	mux.HandleFunc("POST /api/sessions/{id}/suggestion/{action}", s.resolveSuggestion)
 	mux.HandleFunc("GET /api/usage", s.usage)
@@ -157,6 +158,22 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 		*sessions.Detail
 		Suggestion *enrich.Suggestion `json:"suggestion,omitempty"`
 	}{d, row.Suggestion})
+}
+
+func (s *Server) getToolCall(w http.ResponseWriter, r *http.Request) {
+	if !s.fresh(w) {
+		return
+	}
+	c, err := s.index.ToolCall(r.PathValue("id"), r.PathValue("toolId"))
+	if errors.Is(err, os.ErrNotExist) {
+		httpError(w, err, http.StatusNotFound)
+		return
+	}
+	if err != nil {
+		httpError(w, err, http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, c)
 }
 
 func (s *Server) putEnrichment(w http.ResponseWriter, r *http.Request) {

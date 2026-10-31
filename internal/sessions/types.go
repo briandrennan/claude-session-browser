@@ -84,6 +84,16 @@ type ToolResult struct {
 	Chars   int    `json:"chars"`
 	IsError bool   `json:"isError"`
 	Kind    string `json:"kind,omitempty"` // "rejected" when the user declined the call
+	// Truncated is set when Text was clipped from the full Chars-long output.
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// ToolCallFull is one tool call with its unclipped input and result.
+type ToolCallFull struct {
+	ToolID string          `json:"toolId"`
+	Name   string          `json:"name"`
+	Input  json.RawMessage `json:"input"`
+	Result *ToolResult     `json:"result,omitempty"`
 }
 
 // Event is one renderable item of the turn history.
@@ -98,10 +108,12 @@ type Event struct {
 	ToolID    string          `json:"toolId,omitempty"`
 	Summary   string          `json:"summary,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
-	Result    *ToolResult     `json:"result,omitempty"`
-	Model     string          `json:"model,omitempty"`
-	Usage     *Usage          `json:"usage,omitempty"`
-	AgentLink string          `json:"agentLink,omitempty"` // subagent id spawned by this tool_use
+	// InputTruncated is set when Input is a {"_truncated": ...} stand-in for an oversized input.
+	InputTruncated bool        `json:"inputTruncated,omitempty"`
+	Result         *ToolResult `json:"result,omitempty"`
+	Model          string      `json:"model,omitempty"`
+	Usage          *Usage      `json:"usage,omitempty"`
+	AgentLink      string      `json:"agentLink,omitempty"` // subagent id spawned by this tool_use
 }
 
 type ToolStat struct {
@@ -154,6 +166,18 @@ type MemoryUse struct {
 	Ops       map[string]int `json:"ops"`  // loaded, read, write, edit
 	TokensEst int64          `json:"tokensEst"`
 	First     time.Time      `json:"first"`
+	Accesses  []MemoryAccess `json:"accesses"` // in transcript order, capped at maxAccesses
+}
+
+type MemoryAccess struct {
+	Time      time.Time `json:"t"`
+	Op        string    `json:"op"`    // loaded, read, write, edit
+	Actor     string    `json:"actor"` // "main", subagent id, or "system" for injected context
+	UUID      string    `json:"uuid"`
+	ToolID    string    `json:"toolId,omitempty"`    // read/write/edit: the tool_use event id
+	Content   string    `json:"content,omitempty"`   // loaded: the injected file content
+	Unchanged bool      `json:"unchanged,omitempty"` // loaded: identical to the previous load of this path
+	Truncated bool      `json:"truncated,omitempty"`
 }
 
 type Insight struct {

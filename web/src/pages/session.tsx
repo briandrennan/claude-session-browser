@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { Fragment, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router'
-import { AlertTriangle, ArrowLeft, Bot, Info, OctagonAlert } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Bot, ChevronDown, ChevronRight, Info, OctagonAlert } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -10,10 +10,12 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ClassifyButton, SuggestionReview } from '@/components/suggestion'
 import { TagEditor } from '@/components/tag-editor'
+import { Collapsible, StatusDot, ToolCallDetail } from '@/components/tool-call'
+import { callStatus, toggled } from '@/lib/tool-call'
 import { MAIN, SYSTEM, TranscriptRow, USER } from '@/components/transcript'
 import { useFetch } from '@/hooks/use-fetch'
-import { api, promptTokens, totalTokens, type AgentInfo, type Insight, type SessionDetail } from '@/lib/api'
-import { dateTime, duration, modelLabel, tokens, usd } from '@/lib/format'
+import { api, promptTokens, totalTokens, type AgentInfo, type Insight, type MemoryAccess, type SessionDetail, type SessionEvent } from '@/lib/api'
+import { dateTime, duration, modelLabel, time, tokens, usd } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useThemeContext } from '@/theme/provider'
 
@@ -22,13 +24,20 @@ import { useThemeContext } from '@/theme/provider'
 // without re-rendering. Never cycled: past the theme's slot count agents get the neutral.
 const agentColor = (i: number, slots: number) => (i < slots ? `var(--series-${i + 1})` : 'var(--series-other)')
 
+// Keyed by id so page state (limit, tab, actors, pending jump) resets when navigating between sessions.
 export function SessionPage() {
   const { id = '' } = useParams()
+  return <SessionView key={id} id={id} />
+}
+
+function SessionView({ id }: { id: string }) {
   const detail = useFetch(() => api.session(id), [id])
   const meta = useFetch(() => api.meta(), [])
   const [tab, setTab] = useState('conversation')
   const [actors, setActors] = useState<Set<string>>()
   const [vocab, setVocab] = useState<string[]>()
+  const [limit, setLimit] = useState(400)
+  const [pending, setPending] = useState<{ uuid: string; toolId?: string; n: number }>()
 
   const d = detail.data
   const labels = meta.data?.modelLabels ?? {}
@@ -36,6 +45,22 @@ export function SessionPage() {
   useEffect(() => {
     if (d) document.title = `${d.summary.title} · Session Browser`
   }, [d])
+
+  useEffect(() => {
+    if (!pending) return
+    let tries = 0
+    const go = () => {
+      const el = (pending.toolId && document.getElementById(`tool-${pending.toolId}`)) || document.getElementById(`ev-${pending.uuid}`)
+      if (!el || !el.getClientRects().length) {
+        if (tries++ < 10) timer = setTimeout(go, 50)
+        return
+      }
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      el.animate([{ background: 'color-mix(in oklab, var(--warning) 35%, transparent)' }, { background: 'transparent' }], { duration: 2000 })
+    }
+    let timer = setTimeout(go, 0)
+    return () => clearTimeout(timer)
+  }, [pending])
 
   if (detail.error) return <p className="text-destructive">{detail.error.message}</p>
   if (!d) return <Skeleton className="h-96" />
@@ -48,14 +73,13 @@ export function SessionPage() {
     setTab('conversation')
     window.scrollTo({ top: 0 })
   }
-  const jumpTo = (uuid: string) => {
+  const jumpTo = (uuid: string, toolId?: string) => {
     setActors(new Set(allActors))
     setTab('conversation')
-    setTimeout(() => {
-      const el = document.getElementById(`ev-${uuid}`)
-      el?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      el?.animate([{ background: 'color-mix(in oklab, var(--warning) 35%, transparent)' }, { background: 'transparent' }], { duration: 2000 })
-    }, 50)
+    const idx = d.events.findIndex((e) => (toolId ? e.kind === 'tool_use' && e.toolId === toolId : e.uuid === uuid))
+    const at = idx < 0 ? d.events.findIndex((e) => e.uuid === uuid) : idx
+    if (at >= 0) setLimit((l) => Math.max(l, at + 50))
+    setPending((p) => ({ uuid, toolId, n: (p?.n ?? 0) + 1 }))
   }
   const prompt = promptTokens(s.usage)
 
@@ -116,7 +140,7 @@ export function SessionPage() {
       )}
 
       {s.archived ? (
-        <Conversation d={d} visible={visible} allActors={allActors} setActors={setActors} onOpenAgent={openAgent} />
+        <Conversation d={d} visible={visible} allActors={allActors} setActors={setActors} onOpenAgent={openAgent} limit={limit} setLimit={setLimit} />
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
@@ -141,22 +165,22 @@ export function SessionPage() {
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="conversation" className="mt-4">
-              <Conversation d={d} visible={visible} allActors={allActors} setActors={setActors} onOpenAgent={openAgent} />
+            <TabsContent value="conversation" forceMount className="mt-4 data-[state=inactive]:hidden">
+              <Conversation d={d} visible={visible} allActors={allActors} setActors={setActors} onOpenAgent={openAgent} limit={limit} setLimit={setLimit} />
             </TabsContent>
-            <TabsContent value="agents" className="mt-4">
+            <TabsContent value="agents" forceMount className="mt-4 data-[state=inactive]:hidden">
               <Agents d={d} labels={labels} onOpenAgent={openAgent} />
             </TabsContent>
-            <TabsContent value="tools" className="mt-4">
-              <Tools d={d} />
+            <TabsContent value="tools" forceMount className="mt-4 data-[state=inactive]:hidden">
+              <Tools d={d} onJump={jumpTo} />
             </TabsContent>
-            <TabsContent value="skills" className="mt-4">
+            <TabsContent value="skills" forceMount className="mt-4 data-[state=inactive]:hidden">
               <Skills d={d} onJump={jumpTo} />
             </TabsContent>
-            <TabsContent value="memories" className="mt-4">
-              <Memories d={d} />
+            <TabsContent value="memories" forceMount className="mt-4 data-[state=inactive]:hidden">
+              <Memories d={d} onJump={jumpTo} />
             </TabsContent>
-            <TabsContent value="insights" className="mt-4">
+            <TabsContent value="insights" forceMount className="mt-4 data-[state=inactive]:hidden">
               <Insights insights={d.insights} onJump={jumpTo} />
             </TabsContent>
           </Tabs>
@@ -184,13 +208,16 @@ type ConversationProps = {
   allActors: string[]
   setActors: (s: Set<string>) => void
   onOpenAgent: (id: string) => void
+  limit: number
+  setLimit: React.Dispatch<React.SetStateAction<number>>
 }
 
-function Conversation({ d, visible, allActors, setActors, onOpenAgent }: ConversationProps) {
+function Conversation({ d, visible, allActors, setActors, onOpenAgent, limit, setLimit }: ConversationProps) {
   const [showThinking, setShowThinking] = useState(true)
-  const [limit, setLimit] = useState(400)
+  const [toolInputs, setToolInputs] = useState(false)
   const slots = useThemeContext().shown.chart.categorical.length
   const agents = useMemo(() => new Map(d.agents.map((a, i) => [a.id, { a, color: agentColor(i, slots) }])), [d.agents, slots])
+  const index = useMemo(() => new Map(d.events.map((e, i) => [e, i])), [d.events])
   const events = useMemo(() => d.events.filter((e) => visible.has(e.actor) || (!agents.has(e.actor) && !allActors.includes(e.actor) && visible.has(SYSTEM))), [d.events, visible, agents, allActors])
 
   const counts = useMemo(() => {
@@ -201,7 +228,7 @@ function Conversation({ d, visible, allActors, setActors, onOpenAgent }: Convers
 
   const toggle = (a: string) => {
     const next = new Set(visible)
-    next.has(a) ? next.delete(a) : next.add(a)
+    if (!next.delete(a)) next.add(a)
     setActors(next)
   }
   const allVisible = allActors.every((a) => visible.has(a))
@@ -246,17 +273,22 @@ function Conversation({ d, visible, allActors, setActors, onOpenAgent }: Convers
         <label className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
           <Checkbox checked={showThinking} onCheckedChange={(v) => setShowThinking(!!v)} /> thinking
         </label>
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Checkbox checked={toolInputs} onCheckedChange={(v) => setToolInputs(!!v)} /> tool inputs
+        </label>
       </div>
       <div className="rounded-xl border bg-card px-4 py-3 sm:px-6">
-        {events.slice(0, limit).map((e, i) => {
+        {events.slice(0, limit).map((e) => {
           const ag = agents.get(e.actor)
           return (
             <TranscriptRow
-              key={`${e.uuid}-${i}`}
+              key={e.kind === 'tool_use' && e.toolId ? `tool-${e.toolId}` : `${e.uuid}-${index.get(e)}`}
               e={e}
               agent={ag?.a}
               agentColor={ag?.color}
+              sessionId={d.summary.id}
               showThinking={showThinking}
+              toolInputs={toolInputs}
               onOpenAgent={onOpenAgent}
             />
           )
@@ -359,9 +391,104 @@ function Agents({ d, labels, onOpenAgent }: { d: SessionDetail; labels: Record<s
   )
 }
 
-function Tools({ d }: { d: SessionDetail }) {
+function useActors(d: SessionDetail) {
+  const slots = useThemeContext().shown.chart.categorical.length
+  return useMemo(
+    () => ({
+      name: (a: string) => (a === MAIN ? 'main' : a === USER ? 'you' : (d.agents.find((x) => x.id === a)?.type ?? a.slice(0, 6))),
+      color: (a: string) => {
+        const i = d.agents.findIndex((x) => x.id === a)
+        return i >= 0 ? agentColor(i, slots) : 'var(--foreground)'
+      },
+    }),
+    [d.agents, slots],
+  )
+}
+
+function ActorTag({ actor, actors }: { actor: string; actors: ReturnType<typeof useActors> }) {
+  return (
+    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+      <span className="size-2 shrink-0 rounded-full" style={{ background: actors.color(actor) }} aria-hidden />
+      {actors.name(actor)}
+    </span>
+  )
+}
+
+function Chevron({ open }: { open: boolean }) {
+  const C = open ? ChevronDown : ChevronRight
+  return <C className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+}
+
+const SHOW_STEP = 25
+
+function ToolCalls({ d, name, onJump, actors }: { d: SessionDetail; name: string; onJump: Jump; actors: ReturnType<typeof useActors> }) {
+  const [errorsOnly, setErrorsOnly] = useState(false)
+  const [shown, setShown] = useState(SHOW_STEP)
+  const [open, setOpen] = useState<Set<string>>(new Set())
+  const calls = useMemo(() => d.events.filter((e) => e.kind === 'tool_use' && e.tool === name), [d.events, name])
+  const hasErrors = calls.some((e) => callStatus(e) === 'error')
+  const list = errorsOnly ? calls.filter((e) => callStatus(e) === 'error') : calls
+  const toggle = (k: string) => setOpen((o) => toggled(o, k))
+  return (
+    <div className="flex flex-col gap-1">
+      {hasErrors && (
+        <label className="mb-1 flex w-fit items-center gap-2 text-xs text-muted-foreground">
+          <Checkbox checked={errorsOnly} onCheckedChange={(v) => setErrorsOnly(!!v)} /> errors only
+        </label>
+      )}
+      {!list.length && <span className="text-xs text-muted-foreground">No calls in the transcript.</span>}
+      {list.slice(0, shown).map((e, i) => {
+        const k = e.toolId ?? `${e.uuid}-${i}`
+        const isOpen = open.has(k)
+        return (
+          <div key={k} className="rounded-md border">
+            <div className="flex items-center gap-2 px-2 py-1 text-xs">
+              <button className="flex min-w-0 flex-1 items-center gap-2 text-left" aria-expanded={isOpen} onClick={() => toggle(k)}>
+                <Chevron open={isOpen} />
+                <span className="shrink-0 font-mono text-muted-foreground tabular-nums">{time(e.t)}</span>
+                <ActorTag actor={e.actor} actors={actors} />
+                <StatusDot status={callStatus(e)} />
+                <span className="truncate font-mono" title={e.summary}>
+                  {e.summary || '—'}
+                </span>
+              </button>
+              <Button variant="outline" size="xs" onClick={() => onJump(e.uuid, e.toolId)}>
+                jump
+              </Button>
+            </div>
+            {isOpen && (
+              <div className="border-t bg-muted/30 p-2">
+                <ToolCallDetail e={e} sessionId={d.summary.id} />
+              </div>
+            )}
+          </div>
+        )
+      })}
+      {list.length > shown && (
+        <Button variant="ghost" size="xs" className="w-fit" onClick={() => setShown((n) => n + SHOW_STEP)}>
+          show more ({list.length - shown} remaining)
+        </Button>
+      )}
+    </div>
+  )
+}
+
+type Jump = (uuid: string, toolId?: string) => void
+
+function Tools({ d, onJump }: { d: SessionDetail; onJump: Jump }) {
   const max = Math.max(1, ...d.tools.map((t) => t.calls))
-  const actorName = (a: string) => (a === MAIN ? 'main' : (d.agents.find((x) => x.id === a)?.type ?? a.slice(0, 6)))
+  const actors = useActors(d)
+  // Subagents of one type are merged ("general-purpose 178 (8 agents)") so the column stays readable.
+  const byActor = (counts: Record<string, number>) => {
+    const by = new Map<string, { n: number; agents: number }>()
+    for (const [a, n] of Object.entries(counts)) {
+      const g = by.get(actors.name(a)) ?? { n: 0, agents: 0 }
+      by.set(actors.name(a), { n: g.n + n, agents: g.agents + 1 })
+    }
+    return [...by].map(([name, g]) => `${name} ${g.n}${g.agents > 1 ? ` (${g.agents} agents)` : ''}`).join(' · ')
+  }
+  const [open, setOpen] = useState<Set<string>>(new Set())
+  const toggle = (k: string) => setOpen((o) => toggled(o, k))
   return (
     <Card>
       <CardHeader>
@@ -387,30 +514,42 @@ function Tools({ d }: { d: SessionDetail }) {
           </TableHeader>
           <TableBody>
             {d.tools.map((t) => (
-              <TableRow key={t.name}>
-                <TableCell className="font-mono text-xs">
-                  {t.name}
-                  {t.group !== 'builtin' && <div className="text-[10px] text-muted-foreground">{t.group}</div>}
-                </TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-2">
-                    <div className="h-2 flex-1 rounded-full bg-muted">
-                      <div className="h-2 rounded-full bg-[var(--sequential)]" style={{ width: `${(t.calls / max) * 100}%` }} />
+              <Fragment key={t.name}>
+                <TableRow className="cursor-pointer" onClick={() => toggle(t.name)}>
+                  <TableCell className="font-mono text-xs">
+                    <button className="flex items-center gap-1.5 text-left" aria-expanded={open.has(t.name)}>
+                      <Chevron open={open.has(t.name)} />
+                      <span>
+                        {t.name}
+                        {t.group !== 'builtin' && <span className="block text-[10px] text-muted-foreground">{t.group}</span>}
+                      </span>
+                    </button>
+                  </TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <div className="h-2 flex-1 rounded-full bg-muted">
+                        <div className="h-2 rounded-full bg-[var(--sequential)]" style={{ width: `${(t.calls / max) * 100}%` }} />
+                      </div>
+                      <span className="w-8 text-right font-mono text-xs tabular-nums">{t.calls}</span>
                     </div>
-                    <span className="w-8 text-right font-mono text-xs tabular-nums">{t.calls}</span>
-                  </div>
-                </TableCell>
-                <TableCell className={cn('text-right font-mono text-xs', t.errors > 0 && 'text-[var(--critical)]')}>{t.errors}</TableCell>
-                <TableCell className="text-right font-mono text-xs">{t.rejected}</TableCell>
-                <TableCell className="text-xs text-muted-foreground">
-                  {Object.entries(t.byActor)
-                    .map(([a, n]) => `${actorName(a)} ${n}`)
-                    .join(' · ')}
-                </TableCell>
-                <TableCell className="text-right font-mono text-xs">{tokens(t.inputTokensEst)}</TableCell>
-                <TableCell className="text-right font-mono text-xs">{tokens(t.resultTokensEst)}</TableCell>
-                <TableCell className="text-right font-mono text-xs">{t.subagentCost ? usd(t.subagentCost) : ''}</TableCell>
-              </TableRow>
+                  </TableCell>
+                  <TableCell className={cn('text-right font-mono text-xs', t.errors > 0 && 'text-[var(--critical)]')}>{t.errors}</TableCell>
+                  <TableCell className="text-right font-mono text-xs">{t.rejected}</TableCell>
+                  <TableCell className="min-w-48 text-xs whitespace-normal text-muted-foreground">{byActor(t.byActor)}</TableCell>
+                  <TableCell className="text-right font-mono text-xs">{tokens(t.inputTokensEst)}</TableCell>
+                  <TableCell className="text-right font-mono text-xs">{tokens(t.resultTokensEst)}</TableCell>
+                  <TableCell className="text-right font-mono text-xs">{t.subagentCost ? usd(t.subagentCost) : ''}</TableCell>
+                </TableRow>
+                {open.has(t.name) && (
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={8} className="bg-muted/20 whitespace-normal">
+                      <div className="w-0 min-w-full">
+                        <ToolCalls d={d} name={t.name} onJump={onJump} actors={actors} />
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
             ))}
           </TableBody>
         </Table>
@@ -468,14 +607,125 @@ function Skills({ d, onJump }: { d: SessionDetail; onJump: (uuid: string) => voi
   )
 }
 
-function Memories({ d }: { d: SessionDetail }) {
+const OP_ORDER = ['loaded', 'read', 'write', 'edit']
+
+const REDACTED = /^\[redacted \d+ chars?\]$/
+
+// Latest known body of a memory file. Edits (and writes whose input we can't read) after the chosen
+// content are reported in `after` so the UI can say the shown text is stale.
+function latestContent(accesses: MemoryAccess[], byTool: Map<string, SessionEvent>) {
+  let after: MemoryAccess | undefined
+  for (let i = accesses.length - 1; i >= 0; i--) {
+    const a = accesses[i]
+    if (a.op === 'loaded' && a.content) return { text: a.content, from: `loaded ${time(a.t)}`, after }
+    if (a.op === 'edit') after ??= a
+    if (a.op === 'write') {
+      const ev = a.toolId ? byTool.get(a.toolId) : undefined
+      const inp = ev?.input
+      const c = typeof inp === 'object' && inp !== null ? (inp as Record<string, unknown>).content : undefined
+      if (ev && !ev.inputTruncated && typeof c === 'string' && !REDACTED.test(c.trim())) return { text: c, from: `Write ${time(a.t)}`, after }
+      after ??= a
+    }
+  }
+}
+
+function MemoryAccessRow({ a, ev, d, onJump, actors }: { a: MemoryAccess; ev?: SessionEvent; d: SessionDetail; onJump: Jump; actors: ReturnType<typeof useActors> }) {
+  const [open, setOpen] = useState(false)
+  const tool = a.op !== 'loaded'
+  const hasDetail = tool ? !!a.toolId : true
+  return (
+    <div className="rounded-md border">
+      <div className="flex items-center gap-2 px-2 py-1 text-xs">
+        <button className="flex min-w-0 flex-1 items-center gap-2 text-left disabled:cursor-default" aria-expanded={open} disabled={!hasDetail} onClick={() => setOpen((o) => !o)}>
+          {hasDetail ? <Chevron open={open} /> : <span className="size-3.5" />}
+          <span className="shrink-0 font-mono text-muted-foreground tabular-nums">{time(a.t)}</span>
+          <Badge variant={a.op === 'loaded' ? 'secondary' : 'outline'}>{a.op}</Badge>
+          <ActorTag actor={a.actor} actors={actors} />
+          {a.unchanged && <span className="text-[10px] text-muted-foreground">unchanged</span>}
+          {!tool && !a.unchanged && !!a.content && <span className="font-mono text-[10px] text-muted-foreground">≈{tokens(a.content.length / 4)} tokens</span>}
+        </button>
+        {a.uuid && (
+          <Button variant="outline" size="xs" onClick={() => onJump(a.uuid, a.toolId)}>
+            jump
+          </Button>
+        )}
+      </div>
+      {open && (
+        <div className="border-t bg-muted/30 p-2">
+          {!tool ? (
+            a.unchanged ? (
+              <span className="text-xs text-muted-foreground italic">same as previous load</span>
+            ) : a.content ? (
+              <>
+                <Collapsible text={a.content} previewLines={12} scroll />
+                {a.truncated && <div className="text-[10px] text-muted-foreground">content truncated</div>}
+              </>
+            ) : (
+              <span className="text-xs text-muted-foreground">path referenced in injected context; contents weren't captured</span>
+            )
+          ) : ev ? (
+            <ToolCallDetail e={ev} sessionId={d.summary.id} />
+          ) : (
+            <span className="text-xs text-muted-foreground">tool call not found in transcript</span>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function MemoryDetail({ m, d, byTool, onJump, actors }: { m: SessionDetail['memories'][number]; d: SessionDetail; byTool: Map<string, SessionEvent>; onJump: Jump; actors: ReturnType<typeof useActors> }) {
+  const [showLatest, setShowLatest] = useState(false)
+  const accesses = useMemo(() => {
+    const ms = (a: MemoryAccess) => Date.parse(a.t) || 0
+    return (m.accesses ?? []).map((a, i) => ({ a, i })).sort((x, y) => ms(x.a) - ms(y.a) || x.i - y.i).map((x) => x.a)
+  }, [m.accesses])
+  const unlisted = Object.values(m.ops).reduce((n, v) => n + v, 0) - accesses.length
+  const latest = useMemo(() => latestContent(accesses, byTool), [accesses, byTool])
+  if (!accesses.length) return <span className="text-xs text-muted-foreground">No access details in this payload.</span>
+  return (
+    <div className="flex flex-col gap-1">
+      {latest && (
+        <div className="mb-1 flex flex-col gap-1">
+          <Button variant="outline" size="xs" className="w-fit" aria-expanded={showLatest} onClick={() => setShowLatest((v) => !v)}>
+            {showLatest ? 'Hide' : 'Show'} {latest.after ? 'content' : 'latest content'} (as of {latest.from})
+          </Button>
+          {latest.after && (
+            <span className="text-xs text-[var(--warning)]">
+              Content as of {latest.from} — {latest.after.op === 'edit' ? 'edited' : 'written (content unavailable)'} at {time(latest.after.t)} after this
+            </span>
+          )}
+          {showLatest && (
+            <div className="rounded-md border bg-muted/30 p-2">
+              <Collapsible text={latest.text} previewLines={20} scroll />
+            </div>
+          )}
+        </div>
+      )}
+      {accesses.map((a, i) => (
+        <MemoryAccessRow key={`${a.uuid}-${i}`} a={a} ev={a.toolId ? byTool.get(a.toolId) : undefined} d={d} onJump={onJump} actors={actors} />
+      ))}
+      {unlisted > 0 && <span className="text-xs text-muted-foreground">+{unlisted} more accesses not listed (first 200 kept)</span>}
+    </div>
+  )
+}
+
+function Memories({ d, onJump }: { d: SessionDetail; onJump: Jump }) {
+  const actors = useActors(d)
+  const [open, setOpen] = useState<Set<string>>(new Set())
+  const byTool = useMemo(() => {
+    const m = new Map<string, SessionEvent>()
+    for (const e of d.events) if (e.kind === 'tool_use' && e.toolId) m.set(e.toolId, e)
+    return m
+  }, [d.events])
+  const toggle = (k: string) => setOpen((o) => toggled(o, k))
   if (!d.memories.length)
     return <Empty text="No CLAUDE.md, rules or auto-memory files were loaded, read or written in this session." />
   return (
     <Card>
       <CardHeader>
         <CardTitle>Memories</CardTitle>
-        <CardDescription>CLAUDE.md files, rules and auto-memory files that were loaded into context or read/written by tools.</CardDescription>
+        <CardDescription>CLAUDE.md files, rules and auto-memory files that were loaded into context or read/written by tools. Expand a row to see each access.</CardDescription>
       </CardHeader>
       <CardContent>
         <Table>
@@ -489,20 +739,35 @@ function Memories({ d }: { d: SessionDetail }) {
           </TableHeader>
           <TableBody>
             {d.memories.map((m) => (
-              <TableRow key={m.path}>
-                <TableCell className="max-w-lg truncate font-mono text-xs" title={m.path}>
-                  {m.path}
-                </TableCell>
-                <TableCell>
-                  <Badge variant="outline">{m.kind}</Badge>
-                </TableCell>
-                <TableCell className="text-xs">
-                  {Object.entries(m.ops)
-                    .map(([k, v]) => `${k} ×${v}`)
-                    .join(' · ')}
-                </TableCell>
-                <TableCell className="text-right font-mono text-xs">{m.tokensEst ? tokens(m.tokensEst) : '–'}</TableCell>
-              </TableRow>
+              <Fragment key={m.path}>
+                <TableRow className="cursor-pointer" onClick={() => toggle(m.path)}>
+                  <TableCell className="max-w-lg font-mono text-xs" title={m.path}>
+                    <button className="flex max-w-full items-center gap-1.5 text-left" aria-expanded={open.has(m.path)}>
+                      <Chevron open={open.has(m.path)} />
+                      <span className="truncate">{m.path}</span>
+                    </button>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="outline">{m.kind}</Badge>
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {Object.entries(m.ops)
+                      .sort(([a], [b]) => OP_ORDER.indexOf(a) - OP_ORDER.indexOf(b))
+                      .map(([k, v]) => `${k} ×${v}`)
+                      .join(' · ')}
+                  </TableCell>
+                  <TableCell className="text-right font-mono text-xs">{m.tokensEst ? tokens(m.tokensEst) : '–'}</TableCell>
+                </TableRow>
+                {open.has(m.path) && (
+                  <TableRow className="hover:bg-transparent">
+                    <TableCell colSpan={4} className="bg-muted/20 whitespace-normal">
+                      <div className="w-0 min-w-full">
+                        <MemoryDetail m={m} d={d} byTool={byTool} onJump={onJump} actors={actors} />
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )}
+              </Fragment>
             ))}
           </TableBody>
         </Table>

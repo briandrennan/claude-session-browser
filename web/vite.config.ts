@@ -6,5 +6,6 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: { alias: { '@': path.resolve(import.meta.dirname, './src') } },
-  server: { proxy: { '/api': 'http://127.0.0.1:8484' } },
+  // `make dev PORT=…` sets CSB_PORT so the proxy follows the backend.
+  server: { proxy: { '/api': `http://127.0.0.1:${process.env.CSB_PORT ?? 8484}` } },
 })

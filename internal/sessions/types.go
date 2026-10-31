@@ -111,9 +111,13 @@ type Event struct {
 	// InputTruncated is set when Input is a {"_truncated": ...} stand-in for an oversized input.
 	InputTruncated bool        `json:"inputTruncated,omitempty"`
 	Result         *ToolResult `json:"result,omitempty"`
-	Model          string      `json:"model,omitempty"`
-	Usage          *Usage      `json:"usage,omitempty"`
-	AgentLink      string      `json:"agentLink,omitempty"` // subagent id spawned by this tool_use
+	// Paths are the file paths named by the tool input (file_path, notebook_path, path),
+	// computed from the full input. CmdPaths are path-like words of a Bash command.
+	Paths     []string `json:"paths,omitempty"`
+	CmdPaths  []string `json:"cmdPaths,omitempty"`
+	Model     string   `json:"model,omitempty"`
+	Usage     *Usage   `json:"usage,omitempty"`
+	AgentLink string   `json:"agentLink,omitempty"` // subagent id spawned by this tool_use
 }
 
 type ToolStat struct {
@@ -174,10 +178,19 @@ type MemoryAccess struct {
 	Op        string    `json:"op"`    // loaded, read, write, edit
 	Actor     string    `json:"actor"` // "main", subagent id, or "system" for injected context
 	UUID      string    `json:"uuid"`
-	ToolID    string    `json:"toolId,omitempty"`    // read/write/edit: the tool_use event id
-	Content   string    `json:"content,omitempty"`   // loaded: the injected file content
-	Unchanged bool      `json:"unchanged,omitempty"` // loaded: identical to the previous load of this path
+	ToolID    string    `json:"toolId,omitempty"`  // read/write/edit: the tool_use event id
+	Content   string    `json:"content,omitempty"` // loaded: the injected file content
 	Truncated bool      `json:"truncated,omitempty"`
+	// Reloads are later loads whose content was identical to this load; they are
+	// folded into this row instead of getting rows of their own.
+	Reloads []MemoryReload `json:"reloads,omitempty"`
+}
+
+// MemoryReload is one load of a memory path that repeated the previous load verbatim.
+type MemoryReload struct {
+	Time  time.Time `json:"t"`
+	Actor string    `json:"actor"`
+	UUID  string    `json:"uuid"`
 }
 
 type Insight struct {

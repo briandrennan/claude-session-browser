@@ -11,10 +11,12 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { ClassifyButton, SuggestionReview } from '@/components/suggestion'
 import { TagEditor } from '@/components/tag-editor'
 import { Collapsible, StatusDot, ToolCallDetail } from '@/components/tool-call'
+import { FilteredCalls, ToolFilterBar } from '@/components/tool-filter'
 import { callStatus, toggled } from '@/lib/tool-call'
+import { useToolFilter, type ToolFilter } from '@/lib/tool-filter'
 import { MAIN, SYSTEM, TranscriptRow, USER } from '@/components/transcript'
 import { useFetch } from '@/hooks/use-fetch'
-import { api, promptTokens, totalTokens, type AgentInfo, type Insight, type MemoryAccess, type SessionDetail, type SessionEvent } from '@/lib/api'
+import { api, promptTokens, totalTokens, type AgentInfo, type Insight, type MemoryAccess, type MemoryReload, type SessionDetail, type SessionEvent } from '@/lib/api'
 import { dateTime, duration, modelLabel, time, tokens, usd } from '@/lib/format'
 import { cn } from '@/lib/utils'
 import { useThemeContext } from '@/theme/provider'
@@ -23,6 +25,8 @@ import { useThemeContext } from '@/theme/provider'
 // chart modes; tonal would imply an order that isn't there. CSS vars, so theme previews apply
 // without re-rendering. Never cycled: past the theme's slot count agents get the neutral.
 const agentColor = (i: number, slots: number) => (i < slots ? `var(--series-${i + 1})` : 'var(--series-other)')
+
+const NO_EVENTS: SessionEvent[] = []
 
 // Keyed by id so page state (limit, tab, actors, pending jump) resets when navigating between sessions.
 export function SessionPage() {
@@ -40,6 +44,7 @@ function SessionView({ id }: { id: string }) {
   const [pending, setPending] = useState<{ uuid: string; toolId?: string; n: number }>()
 
   const d = detail.data
+  const filter = useToolFilter(id, d?.events ?? NO_EVENTS)
   const labels = meta.data?.modelLabels ?? {}
 
   useEffect(() => {
@@ -76,6 +81,8 @@ function SessionView({ id }: { id: string }) {
   const jumpTo = (uuid: string, toolId?: string) => {
     setActors(new Set(allActors))
     setTab('conversation')
+    // A jump to a tool row the filter hides would find nothing; drop the filter first.
+    if (filter.active && d.events.some((e) => e.kind === 'tool_use' && e.toolId === toolId && !filter.passes(e))) filter.clear()
     const idx = d.events.findIndex((e) => (toolId ? e.kind === 'tool_use' && e.toolId === toolId : e.uuid === uuid))
     const at = idx < 0 ? d.events.findIndex((e) => e.uuid === uuid) : idx
     if (at >= 0) setLimit((l) => Math.max(l, at + 50))
@@ -140,7 +147,7 @@ function SessionView({ id }: { id: string }) {
       )}
 
       {s.archived ? (
-        <Conversation d={d} visible={visible} allActors={allActors} setActors={setActors} onOpenAgent={openAgent} limit={limit} setLimit={setLimit} />
+        <Conversation d={d} visible={visible} allActors={allActors} setActors={setActors} onOpenAgent={openAgent} limit={limit} setLimit={setLimit} filter={filter} />
       ) : (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
@@ -166,13 +173,13 @@ function SessionView({ id }: { id: string }) {
             </TabsList>
 
             <TabsContent value="conversation" forceMount className="mt-4 data-[state=inactive]:hidden">
-              <Conversation d={d} visible={visible} allActors={allActors} setActors={setActors} onOpenAgent={openAgent} limit={limit} setLimit={setLimit} />
+              <Conversation d={d} visible={visible} allActors={allActors} setActors={setActors} onOpenAgent={openAgent} limit={limit} setLimit={setLimit} filter={filter} />
             </TabsContent>
             <TabsContent value="agents" forceMount className="mt-4 data-[state=inactive]:hidden">
               <Agents d={d} labels={labels} onOpenAgent={openAgent} />
             </TabsContent>
             <TabsContent value="tools" forceMount className="mt-4 data-[state=inactive]:hidden">
-              <Tools d={d} onJump={jumpTo} />
+              <Tools d={d} onJump={jumpTo} filter={filter} />
             </TabsContent>
             <TabsContent value="skills" forceMount className="mt-4 data-[state=inactive]:hidden">
               <Skills d={d} onJump={jumpTo} />
@@ -210,15 +217,25 @@ type ConversationProps = {
   onOpenAgent: (id: string) => void
   limit: number
   setLimit: React.Dispatch<React.SetStateAction<number>>
+  filter: ToolFilter
 }
 
-function Conversation({ d, visible, allActors, setActors, onOpenAgent, limit, setLimit }: ConversationProps) {
+function Conversation({ d, visible, allActors, setActors, onOpenAgent, limit, setLimit, filter }: ConversationProps) {
   const [showThinking, setShowThinking] = useState(true)
   const [toolInputs, setToolInputs] = useState(false)
   const slots = useThemeContext().shown.chart.categorical.length
   const agents = useMemo(() => new Map(d.agents.map((a, i) => [a.id, { a, color: agentColor(i, slots) }])), [d.agents, slots])
   const index = useMemo(() => new Map(d.events.map((e, i) => [e, i])), [d.events])
-  const events = useMemo(() => d.events.filter((e) => visible.has(e.actor) || (!agents.has(e.actor) && !allActors.includes(e.actor) && visible.has(SYSTEM))), [d.events, visible, agents, allActors])
+  const visibleEvents = useMemo(
+    () => d.events.filter((e) => visible.has(e.actor) || (!agents.has(e.actor) && !allActors.includes(e.actor) && visible.has(SYSTEM))),
+    [d.events, visible, agents, allActors],
+  )
+  const events = useMemo(() => (filter.active ? visibleEvents.filter((e) => filter.passes(e)) : visibleEvents), [visibleEvents, filter])
+  // The filter note counts only tool calls of the actors currently shown.
+  const toolCounts = useMemo(() => {
+    const count = (list: SessionEvent[]) => list.reduce((n, e) => n + (e.kind === 'tool_use' ? 1 : 0), 0)
+    return { shown: count(events), total: count(visibleEvents) }
+  }, [events, visibleEvents])
 
   const counts = useMemo(() => {
     const c = new Map<string, number>()
@@ -250,6 +267,15 @@ function Conversation({ d, visible, allActors, setActors, onOpenAgent, limit, se
 
   return (
     <div className="flex flex-col gap-4">
+      {!d.summary.archived && <ToolFilterBar filter={filter} />}
+      {filter.active && (
+        <p className="text-xs text-muted-foreground">
+          showing {toolCounts.shown} of {toolCounts.total} tool calls (filter active) —{' '}
+          <button className="underline hover:text-foreground" onClick={filter.clear}>
+            clear
+          </button>
+        </p>
+      )}
       <div className="sticky top-14 z-20 -mx-1 flex flex-wrap items-center gap-2 bg-background/90 px-1 py-2 backdrop-blur">
         <span className="text-xs font-medium text-muted-foreground">Actors</span>
         {chip(USER, 'You')}
@@ -290,6 +316,7 @@ function Conversation({ d, visible, allActors, setActors, onOpenAgent, limit, se
               showThinking={showThinking}
               toolInputs={toolInputs}
               onOpenAgent={onOpenAgent}
+              hits={filter.hits(e)}
             />
           )
         })}
@@ -475,7 +502,7 @@ function ToolCalls({ d, name, onJump, actors }: { d: SessionDetail; name: string
 
 type Jump = (uuid: string, toolId?: string) => void
 
-function Tools({ d, onJump }: { d: SessionDetail; onJump: Jump }) {
+function Tools({ d, onJump, filter }: { d: SessionDetail; onJump: Jump; filter: ToolFilter }) {
   const max = Math.max(1, ...d.tools.map((t) => t.calls))
   const actors = useActors(d)
   // Subagents of one type are merged ("general-purpose 178 (8 agents)") so the column stays readable.
@@ -490,6 +517,16 @@ function Tools({ d, onJump }: { d: SessionDetail; onJump: Jump }) {
   const [open, setOpen] = useState<Set<string>>(new Set())
   const toggle = (k: string) => setOpen((o) => toggled(o, k))
   return (
+    <div className="flex flex-col gap-4">
+      <ToolFilterBar filter={filter} />
+      {filter.active && (
+        <FilteredCalls
+          filter={filter}
+          sessionId={d.summary.id}
+          onJump={onJump}
+          actor={(a) => <ActorTag actor={a} actors={actors} />}
+        />
+      )}
     <Card>
       <CardHeader>
         <CardTitle>Tool usage</CardTitle>
@@ -555,6 +592,7 @@ function Tools({ d, onJump }: { d: SessionDetail; onJump: Jump }) {
         </Table>
       </CardContent>
     </Card>
+    </div>
   )
 }
 
@@ -609,6 +647,25 @@ function Skills({ d, onJump }: { d: SessionDetail; onJump: (uuid: string) => voi
 
 const OP_ORDER = ['loaded', 'read', 'write', 'edit']
 
+// A time of day, prefixed with the date when it falls on a different (local) day than ref.
+function timeOn(iso: string, ref: string) {
+  const d = new Date(iso)
+  if (d.toDateString() === new Date(ref).toDateString()) return time(iso)
+  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time(iso)}`
+}
+
+// Collapses time-ordered reloads that display the same second into one entry, keeping the first.
+function sameSecond(reloads: MemoryReload[], ref: string) {
+  const out: { r: MemoryReload; label: string; n: number }[] = []
+  for (const r of reloads) {
+    const label = timeOn(r.t, ref)
+    const last = out[out.length - 1]
+    if (last?.label === label) last.n++
+    else out.push({ r, label, n: 1 })
+  }
+  return out
+}
+
 const REDACTED = /^\[redacted \d+ chars?\]$/
 
 // Latest known body of a memory file. Edits (and writes whose input we can't read) after the chosen
@@ -617,7 +674,14 @@ function latestContent(accesses: MemoryAccess[], byTool: Map<string, SessionEven
   let after: MemoryAccess | undefined
   for (let i = accesses.length - 1; i >= 0; i--) {
     const a = accesses[i]
-    if (a.op === 'loaded' && a.content) return { text: a.content, from: `loaded ${time(a.t)}`, after }
+    if (a.op === 'loaded' && a.content) {
+      // Reloads confirm the same content, so the text is current as of the last of them. Only an edit or
+      // write after that point makes it stale.
+      const last = a.reloads?.length ? a.reloads[a.reloads.length - 1].t : a.t
+      const lastMs = Date.parse(last) || 0
+      if (after && Date.parse(after.t) < lastMs) after = undefined
+      return { text: a.content, from: `loaded ${timeOn(last, a.t)}`, after }
+    }
     if (a.op === 'edit') after ??= a
     if (a.op === 'write') {
       const ev = a.toolId ? byTool.get(a.toolId) : undefined
@@ -641,8 +705,8 @@ function MemoryAccessRow({ a, ev, d, onJump, actors }: { a: MemoryAccess; ev?: S
           <span className="shrink-0 font-mono text-muted-foreground tabular-nums">{time(a.t)}</span>
           <Badge variant={a.op === 'loaded' ? 'secondary' : 'outline'}>{a.op}</Badge>
           <ActorTag actor={a.actor} actors={actors} />
-          {a.unchanged && <span className="text-[10px] text-muted-foreground">unchanged</span>}
-          {!tool && !a.unchanged && !!a.content && <span className="font-mono text-[10px] text-muted-foreground">≈{tokens(a.content.length / 4)} tokens</span>}
+          {!!a.reloads?.length && <span className="text-[10px] text-muted-foreground">reloaded ×{a.reloads.length}</span>}
+          {!tool && !!a.content && <span className="font-mono text-[10px] text-muted-foreground">≈{tokens(a.content.length / 4)} tokens</span>}
         </button>
         {a.uuid && (
           <Button variant="outline" size="xs" onClick={() => onJump(a.uuid, a.toolId)}>
@@ -650,12 +714,24 @@ function MemoryAccessRow({ a, ev, d, onJump, actors }: { a: MemoryAccess; ev?: S
           </Button>
         )}
       </div>
+      {!!a.reloads?.length && (
+        <div className="flex flex-wrap items-center gap-x-1.5 px-2 pb-1 pl-8 text-[11px] text-muted-foreground">
+          <span>reloaded at</span>
+          {sameSecond(a.reloads, a.t).map(({ r, label, n }, i) => (
+            <Fragment key={`${r.uuid}-${i}`}>
+              {i > 0 && <span aria-hidden>·</span>}
+              <button className="font-mono tabular-nums hover:text-foreground hover:underline" title={`${actors.name(r.actor)} · jump to ${n > 1 ? `the first of these ${n} loads` : 'this load'}`} onClick={() => onJump(r.uuid)}>
+                {label}
+                {n > 1 && ` ×${n}`}
+              </button>
+            </Fragment>
+          ))}
+        </div>
+      )}
       {open && (
         <div className="border-t bg-muted/30 p-2">
           {!tool ? (
-            a.unchanged ? (
-              <span className="text-xs text-muted-foreground italic">same as previous load</span>
-            ) : a.content ? (
+            a.content ? (
               <>
                 <Collapsible text={a.content} previewLines={12} scroll />
                 {a.truncated && <div className="text-[10px] text-muted-foreground">content truncated</div>}
@@ -680,7 +756,8 @@ function MemoryDetail({ m, d, byTool, onJump, actors }: { m: SessionDetail['memo
     const ms = (a: MemoryAccess) => Date.parse(a.t) || 0
     return (m.accesses ?? []).map((a, i) => ({ a, i })).sort((x, y) => ms(x.a) - ms(y.a) || x.i - y.i).map((x) => x.a)
   }, [m.accesses])
-  const unlisted = Object.values(m.ops).reduce((n, v) => n + v, 0) - accesses.length
+  // Folded reloads count toward ops but have no row of their own.
+  const unlisted = Object.values(m.ops).reduce((n, v) => n + v, 0) - accesses.length - accesses.reduce((n, a) => n + (a.reloads?.length ?? 0), 0)
   const latest = useMemo(() => latestContent(accesses, byTool), [accesses, byTool])
   if (!accesses.length) return <span className="text-xs text-muted-foreground">No access details in this payload.</span>
   return (

@@ -345,15 +345,7 @@ func (ix *Index) Detail(id string) (*Detail, error) {
 // ToolCall returns the unclipped input and result of one tool call, searching the
 // session's main transcript and its subagent transcripts.
 func (ix *Index) ToolCall(sessionID, toolID string) (*ToolCallFull, error) {
-	ix.mu.RLock()
-	var e *entry
-	for k, v := range ix.entries {
-		if k == sessionID || v.summary.ID == sessionID {
-			e = v
-			break
-		}
-	}
-	ix.mu.RUnlock()
+	e := ix.lookup(sessionID)
 	if e == nil || e.path == "" || toolID == "" {
 		return nil, os.ErrNotExist
 	}

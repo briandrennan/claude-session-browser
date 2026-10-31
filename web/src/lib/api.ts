@@ -119,6 +119,9 @@ export type SessionEvent = {
   model?: string
   usage?: Usage
   agentLink?: string
+  // Computed server-side from the uncut input: file_path/notebook_path/path values, and for Bash the path-like words of the command.
+  paths?: string[]
+  cmdPaths?: string[]
 }
 
 export type AgentInfo = {
@@ -158,6 +161,8 @@ export type SkillUse = {
   uses: { t: string; actor: string; args?: string; uuid: string }[]
 }
 
+export type MemoryReload = { t: string; actor: string; uuid: string }
+
 export type MemoryAccess = {
   t: string
   op: 'loaded' | 'read' | 'write' | 'edit' | string
@@ -165,8 +170,9 @@ export type MemoryAccess = {
   uuid: string
   toolId?: string
   content?: string
-  unchanged?: boolean
   truncated?: boolean
+  // Later loads with content identical to this one, folded into this row.
+  reloads?: MemoryReload[]
 }
 
 export type MemoryUse = {
@@ -203,6 +209,31 @@ export type SessionDetail = {
 export type UsageRow = { bucket: string; group: string; cost: number; usage: Usage; sessions: number }
 export type UsageResult = { buckets: string[]; rows: UsageRow[] }
 
+export type SearchQuery = {
+  q: string
+  engine?: 'auto' | 'rg' | 'go'
+  case?: 'smart' | 'insensitive' | 'sensitive'
+  scope?: 'both' | 'input' | 'output'
+  literal?: boolean
+}
+
+export type SearchHit = {
+  field: 'input' | 'output'
+  line: number
+  text: string
+  // Byte offsets into the UTF-8 encoding of text.
+  ranges: [number, number][]
+}
+
+export type SearchCall = { toolId: string; hits: SearchHit[]; more?: number }
+
+export type SearchResult = {
+  engine: 'rg' | 'go'
+  calls: SearchCall[]
+  totalCalls: number
+  truncated: boolean
+}
+
 export type Meta = {
   tags: string[]
   sources: string[]
@@ -235,6 +266,14 @@ export const api = {
   sessions: (r: Range) => req<Summary[]>(`/api/sessions?${rangeParams(r)}`),
   session: (id: string) => req<SessionDetail>(`/api/sessions/${id}`),
   toolCall: (id: string, toolId: string) => req<ToolCallFull>(`/api/sessions/${id}/tools/${encodeURIComponent(toolId)}`),
+  searchTools: (id: string, q: SearchQuery, signal?: AbortSignal) => {
+    const p = new URLSearchParams({ q: q.q })
+    if (q.engine) p.set('engine', q.engine)
+    if (q.case) p.set('case', q.case)
+    if (q.scope) p.set('scope', q.scope)
+    if (q.literal !== undefined) p.set('literal', q.literal ? '1' : '0')
+    return req<SearchResult>(`/api/sessions/${id}/search?${p}`, { signal })
+  },
   usage: (r: Range, group: string) =>
     req<UsageResult>(`/api/usage?${rangeParams(r)}&group=${group}&tz=${encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone)}`),
   setEnrichment: (id: string, tags: string[], note = '') =>

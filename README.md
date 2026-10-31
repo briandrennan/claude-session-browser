@@ -78,6 +78,29 @@ US-only inference (`inference_geo: us`, ×1.1) are applied per response.
 - `team_dirs`: folders of `csb export` output, one sub-folder per person.
 - `pricing_file`: the time-versioned price table (see above).
 - `classifier`: model, `auto`, and `min_idle` for tag suggestions.
+- `search.engine`: `auto` (default), `rg` or `go`; see "Searching tool calls".
+
+### Searching tool calls
+
+`GET /api/sessions/{id}/search?q=…` searches the full, unclipped input and result text of every
+tool call in a session, including its subagents. Tool input is searched as readable text
+(`key: value` per top-level key, string values verbatim with real newlines), so a pattern
+can match across what would be `\n` escapes in the raw JSON. Parameters: `engine`
+(`auto|rg|go`), `case` (`smart|insensitive|sensitive`), `scope` (`both|input|output`) and
+`literal` (`0|1`). Results hold up to 5 matching lines per call and at most 500 calls.
+
+With `auto`, [ripgrep](https://github.com/BurntSushi/ripgrep) is used when `rg` is on PATH
+(regex syntax is then rg's); otherwise Go's RE2 `regexp` runs the same line-oriented search.
+There are two ways to force the Go engine: set `search.engine: go` in `config.yml` (it is the
+default whenever a request omits `engine`, which the UI does unless you pick "force Go"), or
+choose "force Go" in the UI's engine select (remembered in the browser) or pass `engine=go`.
+The UI's "default engine" choice defers to the config; an explicit `engine=auto` on the API always
+auto-detects. `search.engine: rg` fails the search when `rg` is missing.
+
+Both engines match one line at a time (`--crlf` for rg, so `foo$` matches CRLF lines), cap
+at 1000 matching lines per text, and reject patterns containing a newline or `\n`. Remaining
+differences: `\w`/`\b` are Unicode-aware in rg but ASCII in Go, and a few syntax details differ
+(for example `a{,2}` and `\z`).
 
 ## How transcripts are interpreted
 
@@ -88,7 +111,7 @@ US-only inference (`inference_geo: us`, ×1.1) are applied per response.
 | Subagents | `<session>/subagents/agent-<id>.jsonl` + `.meta.json` (type, description, parent `toolUseId`); legacy top-level `agent-*.jsonl` files are attached by `sessionId` |
 | Tool calls | `tool_use` blocks, results from `tool_result` blocks (`is_error`), rejection text |
 | Skills | `Skill` tool calls, plus `<command-name>` slash commands |
-| Memories | `CLAUDE.md` / `.claude/rules/*.md` / `memory/*.md` files loaded as `Contents of <path>` in injected context (meta lines and `<system-reminder>` blocks, not prompts or relayed subagent reports) or `instructions` attachments, with their content; plus Read/Write/Edit calls on those paths |
+| Memories | `CLAUDE.md` / `.claude/rules/*.md` / `memory/*.md` files loaded as `Contents of <path>` in injected context (meta lines and `<system-reminder>` blocks, not prompts or relayed subagent reports) or `instructions` attachments, with their content (a load identical to the previous load of that path is folded into that row as a "reload"); plus Read/Write/Edit calls on those paths |
 | Friction | tool errors, rejections, `[Request interrupted by user]`, API errors, compactions, repeated identical calls, very large tool results, idle gaps, low cache hit rate |
 
 Claude Code deletes transcripts after `cleanupPeriodDays` (30 by default; raise it in

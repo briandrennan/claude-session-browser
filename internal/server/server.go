@@ -44,6 +44,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/sessions", s.listSessions)
 	mux.HandleFunc("GET /api/sessions/{id}", s.getSession)
 	mux.HandleFunc("GET /api/sessions/{id}/tools/{toolId}", s.getToolCall)
+	mux.HandleFunc("GET /api/sessions/{id}/search", s.searchTools)
 	mux.HandleFunc("PUT /api/sessions/{id}/enrichment", s.putEnrichment)
 	mux.HandleFunc("POST /api/sessions/{id}/suggestion/{action}", s.resolveSuggestion)
 	mux.HandleFunc("GET /api/usage", s.usage)
@@ -174,6 +175,28 @@ func (s *Server) getToolCall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, c)
+}
+
+func (s *Server) searchTools(w http.ResponseWriter, r *http.Request) {
+	if !s.fresh(w) {
+		return
+	}
+	v := r.URL.Query()
+	res, err := s.index.Search(r.Context(), r.PathValue("id"), sessions.SearchQuery{
+		Q: v.Get("q"), Engine: v.Get("engine"), Case: v.Get("case"), Scope: v.Get("scope"),
+		Literal: v.Get("literal") == "1" || v.Get("literal") == "true",
+	})
+	var bad *sessions.SearchError
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		httpError(w, err, http.StatusNotFound)
+	case errors.As(err, &bad):
+		httpError(w, err, http.StatusBadRequest)
+	case err != nil:
+		httpError(w, err, http.StatusInternalServerError)
+	default:
+		writeJSON(w, res)
+	}
 }
 
 func (s *Server) putEnrichment(w http.ResponseWriter, r *http.Request) {

@@ -26,6 +26,12 @@ type Classifier struct {
 	MinIdle time.Duration `yaml:"min_idle"`
 }
 
+// Search configures the tool-call content search.
+type Search struct {
+	// Engine is "auto" (ripgrep when on PATH, else Go regexp), "rg" or "go".
+	Engine string `yaml:"engine"`
+}
+
 type Config struct {
 	Listen      string   `yaml:"listen"`
 	DataDir     string   `yaml:"data_dir"`
@@ -36,6 +42,7 @@ type Config struct {
 	TeamDirs    []string   `yaml:"team_dirs"`
 	DefaultTags []string   `yaml:"default_tags"`
 	Classifier  Classifier `yaml:"classifier"`
+	Search      Search     `yaml:"search"`
 }
 
 // Load reads path, or returns defaults when path does not exist.
@@ -80,6 +87,14 @@ func (c *Config) normalize(baseDir string) error {
 	}
 	if c.PricingFile, err = abs(c.PricingFile); err != nil {
 		return err
+	}
+	c.Search.Engine = strings.ToLower(strings.TrimSpace(c.Search.Engine))
+	switch c.Search.Engine {
+	case "":
+		c.Search.Engine = "auto"
+	case "auto", "rg", "go":
+	default:
+		return fmt.Errorf("search.engine must be auto, rg or go, not %q", c.Search.Engine)
 	}
 	if c.Classifier.MinIdle == 0 {
 		c.Classifier.MinIdle = 30 * time.Minute
@@ -135,5 +150,6 @@ func Default() *Config {
 		Sources:     []Source{{Name: user, Path: "~/.claude"}},
 		DefaultTags: []string{"exploration", "feature-dev", "bug-fixing", "performance-engineering", "simplification", "code-review", "testing"},
 		Classifier:  Classifier{Model: "claude-haiku-5-5", Auto: true},
+		Search:      Search{Engine: "auto"},
 	}
 }

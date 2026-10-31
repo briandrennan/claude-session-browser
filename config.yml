@@ -25,3 +25,8 @@ classifier:
   model: claude-haiku-5-5
   auto: true       # suggest tags for untagged sessions once idle
   min_idle: 30m
+
+# Searching tool-call input/output (Tools and Conversation tabs). "auto" uses ripgrep
+# when `rg` is on PATH and falls back to Go's regexp; "go" forces the built-in engine.
+#search:
+#  engine: auto     # auto | rg | go

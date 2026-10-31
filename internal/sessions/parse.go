@@ -161,7 +161,6 @@ type state struct {
 	tools      map[string]*ToolStat
 	skills     map[string]*SkillUse
 	memories   map[string]*MemoryUse
-	lastLoaded map[string]string // memory path -> content of its previous load
 	agents     map[string]*AgentInfo
 	agentOrder []string
 	callSigs   map[string][]string
@@ -182,7 +181,6 @@ func newState(p *Parser, id, source string) *state {
 		tools:      map[string]*ToolStat{},
 		skills:     map[string]*SkillUse{},
 		memories:   map[string]*MemoryUse{},
-		lastLoaded: map[string]string{},
 		agents:     map[string]*AgentInfo{},
 		callSigs:   map[string][]string{},
 		rates:      map[string]map[string]bool{},
@@ -493,6 +491,10 @@ func (st *state) assistant(rl *rawLine, actor string) {
 				e.InputTruncated = true
 				e.Input, _ = json.Marshal(map[string]string{"_truncated": clip(string(b.Input), maxInput)})
 			}
+			e.Paths = inputPaths(b.Input)
+			if b.Name == "Bash" {
+				e.CmdPaths = bashPaths(b.Input)
+			}
 			st.toolUse(rl, actor, b)
 			st.toolEvents[b.ID] = st.emit(e)
 			continue
@@ -568,25 +570,54 @@ func (st *state) memory(path string, t time.Time) *MemoryUse {
 	return mu
 }
 
-// access counts an op on a memory path and records it (up to maxAccesses per path).
-// Loaded content identical to the path's previous load is replaced by the Unchanged flag.
+// access counts an op on a memory path and records it. Every access is kept here, uncapped and
+// with its full loaded content; foldAccesses orders them by time, folds repeated loads into
+// reloads and applies the caps once every transcript has been parsed.
 func (st *state) access(path string, a MemoryAccess) *MemoryUse {
 	mu := st.memory(path, a.Time)
 	mu.Ops[a.Op]++
-	if a.Op == "loaded" && a.Content != "" {
-		if prev, ok := st.lastLoaded[path]; ok && prev == a.Content {
-			a.Content, a.Unchanged = "", true
-		} else {
-			st.lastLoaded[path] = a.Content
+	mu.Accesses = append(mu.Accesses, a)
+	return mu
+}
+
+// foldAccesses time-orders a path's accesses (the main transcript is parsed before its subagents'),
+// folds a load identical to the path's previous load into that load's row as a Reload (reads, writes
+// and edits in between are ignored; loads without captured content never fold), then clips content
+// and applies the maxAccesses caps. Ops are untouched and count every access.
+func foldAccesses(mu *MemoryUse) {
+	raw := mu.Accesses
+	sort.SliceStable(raw, func(i, j int) bool { return raw[i].Time.Before(raw[j].Time) })
+	if len(raw) > 0 && !raw[0].Time.IsZero() && (mu.First.IsZero() || raw[0].Time.Before(mu.First)) {
+		mu.First = raw[0].Time
+	}
+	var out []MemoryAccess
+	var prev string
+	havePrev := false
+	prevIdx := -1 // row of the previous load in out, or -1 if the cap dropped it
+	for _, a := range raw {
+		isLoad := a.Op == "loaded" && a.Content != ""
+		if isLoad {
+			if havePrev && prev == a.Content {
+				if prevIdx >= 0 && len(out[prevIdx].Reloads) < maxAccesses {
+					out[prevIdx].Reloads = append(out[prevIdx].Reloads, MemoryReload{Time: a.Time, Actor: a.Actor, UUID: a.UUID})
+				}
+				continue
+			}
+			prev, havePrev = a.Content, true
 			if len(a.Content) > maxText {
 				a.Content, a.Truncated = clip(a.Content, maxText), true
 			}
 		}
+		idx := -1
+		if len(out) < maxAccesses {
+			idx = len(out)
+			out = append(out, a)
+		}
+		if isLoad {
+			prevIdx = idx
+		}
 	}
-	if len(mu.Accesses) < maxAccesses {
-		mu.Accesses = append(mu.Accesses, a)
-	}
-	return mu
+	mu.Accesses = out
 }
 
 func (st *state) scanMemoryText(text string, op string, rl *rawLine) {
@@ -817,6 +848,7 @@ func (st *state) finish() {
 	sort.Slice(d.Skills, func(i, j int) bool { return d.Skills[i].Count > d.Skills[j].Count })
 	sort.Strings(s.Skills)
 	for _, mu := range st.memories {
+		foldAccesses(mu)
 		mu.Accesses = nonNil(mu.Accesses)
 		d.Memories = append(d.Memories, *mu)
 	}

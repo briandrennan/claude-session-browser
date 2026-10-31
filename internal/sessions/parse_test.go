@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -147,7 +148,7 @@ func contentsReminder(a, b string) string {
 		"\n\n</system-reminder>"
 }
 
-func TestContentsExtractionAndUnchanged(t *testing.T) {
+func TestContentsExtractionAndReloads(t *testing.T) {
 	dir := t.TempDir()
 	main := filepath.Join(dir, "s.jsonl")
 	write(t, main, jl(t,
@@ -159,16 +160,14 @@ func TestContentsExtractionAndUnchanged(t *testing.T) {
 	if a == nil || b == nil {
 		t.Fatalf("memories: %+v", d.Memories)
 	}
-	if len(a.Accesses) != 2 || a.Ops["loaded"] != 2 {
+	if len(a.Accesses) != 1 || a.Ops["loaded"] != 2 {
 		t.Fatalf("a accesses: %+v", a.Accesses)
 	}
-	if x := a.Accesses[0]; x.Content != "- one\n- two" || x.Op != "loaded" || x.Actor != "system" || x.UUID != "r1" || x.Unchanged {
+	if x := a.Accesses[0]; x.Content != "- one\n- two" || x.Op != "loaded" || x.Actor != "system" || x.UUID != "r1" ||
+		len(x.Reloads) != 1 || x.Reloads[0].UUID != "r2" || x.Reloads[0].Actor != "system" || x.Reloads[0].Time.IsZero() {
 		t.Fatalf("a[0]: %+v", x)
 	}
-	if x := a.Accesses[1]; !x.Unchanged || x.Content != "" || x.UUID != "r2" {
-		t.Fatalf("a[1]: %+v", x)
-	}
-	if b.Accesses[0].Content != "other body" || b.Accesses[1].Content != "other body v2" || b.Accesses[1].Unchanged {
+	if len(b.Accesses) != 2 || b.Accesses[0].Content != "other body" || b.Accesses[1].Content != "other body v2" || len(b.Accesses[1].Reloads) != 0 {
 		t.Fatalf("b: %+v", b.Accesses)
 	}
 }
@@ -202,7 +201,8 @@ func TestInstructionsAttachment(t *testing.T) {
 	if a == nil || len(d.Memories) != 1 || a.TokensEst != 100 || a.Ops["loaded"] != 2 {
 		t.Fatalf("memories: %+v", d.Memories)
 	}
-	if a.Accesses[0].Content != strings.Repeat("m", 400) || a.Accesses[0].UUID != "a1" || !a.Accesses[1].Unchanged {
+	if len(a.Accesses) != 1 || a.Accesses[0].Content != strings.Repeat("m", 400) || a.Accesses[0].UUID != "a1" ||
+		len(a.Accesses[0].Reloads) != 1 || a.Accesses[0].Reloads[0].UUID != "a2" {
 		t.Fatalf("accesses: %+v", a.Accesses)
 	}
 	for _, e := range d.Events {
@@ -267,5 +267,161 @@ func TestPromptMentionsAreNotLoads(t *testing.T) {
 	a := mem(d, memA)
 	if a == nil || len(a.Accesses) != 1 || a.Accesses[0].UUID != "p2" || a.Accesses[0].Content != "INJECTED" {
 		t.Fatalf("reminder load: %+v", a)
+	}
+}
+
+func TestReloadFolding(t *testing.T) {
+	load := func(i int, uuid, body string) m { return reminder(i, uuid, contentsReminder(body, "x")) }
+	dir := t.TempDir()
+	main := filepath.Join(dir, "s.jsonl")
+
+	write(t, main, jl(t, load(1, "r1", "same"), load(2, "r2", "same"), load(3, "r3", "same")))
+	a := mem(parse(t, main), memA)
+	if len(a.Accesses) != 1 || a.Ops["loaded"] != 3 || len(a.Accesses[0].Reloads) != 2 ||
+		a.Accesses[0].Reloads[0].UUID != "r2" || a.Accesses[0].Reloads[1].UUID != "r3" {
+		t.Fatalf("three identical: %+v", a)
+	}
+
+	// A, B, A: the third load changed relative to B, so it gets its own row.
+	write(t, main, jl(t, load(1, "r1", "A"), load(2, "r2", "B"), load(3, "r3", "A"), load(4, "r4", "A")))
+	a = mem(parse(t, main), memA)
+	if len(a.Accesses) != 3 || a.Ops["loaded"] != 4 || len(a.Accesses[2].Reloads) != 1 || a.Accesses[2].Reloads[0].UUID != "r4" ||
+		len(a.Accesses[0].Reloads) != 0 || len(a.Accesses[1].Reloads) != 0 {
+		t.Fatalf("A,B,A,A: %+v", a)
+	}
+
+	// A reload after intervening reads folds into the load row, not the read row.
+	write(t, main, jl(t, load(1, "r1", "A"), toolUse(2, "u1", "toolu_1", "Read", m{"file_path": memA}), load(3, "r3", "A")))
+	a = mem(parse(t, main), memA)
+	if len(a.Accesses) != 2 || a.Accesses[0].Op != "loaded" || len(a.Accesses[0].Reloads) != 1 || len(a.Accesses[1].Reloads) != 0 || a.Ops["loaded"] != 2 {
+		t.Fatalf("read between: %+v", a)
+	}
+}
+
+func TestReloadFoldingAcrossActors(t *testing.T) {
+	load := func(i int, uuid, body string) m { return reminder(i, uuid, contentsReminder(body, "x")) }
+	dir := t.TempDir()
+	main := filepath.Join(dir, "s.jsonl")
+	sub := filepath.Join(dir, "s", "subagents", "agent-a1.jsonl")
+
+	// Main A@1, A@9 and a subagent A@5: one row, reloads in time order.
+	write(t, main, jl(t, load(1, "m1", "A"), load(9, "m9", "A")))
+	write(t, sub, jl(t, load(5, "s5", "A")))
+	a := mem(parse(t, main), memA)
+	if len(a.Accesses) != 1 || a.Ops["loaded"] != 3 || len(a.Accesses[0].Reloads) != 2 ||
+		a.Accesses[0].Reloads[0].UUID != "s5" || a.Accesses[0].Reloads[1].UUID != "m9" {
+		t.Fatalf("A,A + sub A: %+v", a)
+	}
+
+	// Main A@1, B@9 and a subagent A@5: A, A(reload), B, with no spurious extra A row.
+	write(t, main, jl(t, load(1, "m1", "A"), load(9, "m9", "B")))
+	a = mem(parse(t, main), memA)
+	if len(a.Accesses) != 2 || a.Accesses[0].Content != "A" || a.Accesses[1].Content != "B" ||
+		len(a.Accesses[0].Reloads) != 1 || a.Accesses[0].Reloads[0].UUID != "s5" || a.Ops["loaded"] != 3 {
+		t.Fatalf("A,B + sub A: %+v", a)
+	}
+}
+
+func TestReloadFoldingCaps(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "s.jsonl")
+	// Fill the access cap with reads, so the load row itself is never appended.
+	var lines []any
+	for i := 0; i < maxAccesses; i++ {
+		lines = append(lines, toolUse(1, fmt.Sprintf("x%d", i), fmt.Sprintf("toolu_x%d", i), "Read", m{"file_path": memA}))
+	}
+	lines = append(lines, reminder(2, "r1", contentsReminder("same", "x")), reminder(3, "r2", contentsReminder("same", "x")))
+	write(t, main, jl(t, lines...))
+	a := mem(parse(t, main), memA)
+	if len(a.Accesses) != maxAccesses || a.Ops["loaded"] != 2 {
+		t.Fatalf("cap: %d accesses, ops %v", len(a.Accesses), a.Ops)
+	}
+	for _, x := range a.Accesses {
+		if len(x.Reloads) != 0 {
+			t.Fatalf("reload attached to a wrong row: %+v", x)
+		}
+	}
+
+	// Reloads per row are capped.
+	lines = nil
+	for i := 0; i < maxAccesses+20; i++ {
+		lines = append(lines, reminder(1, fmt.Sprintf("r%d", i), contentsReminder("same", "x")))
+	}
+	write(t, main, jl(t, lines...))
+	a = mem(parse(t, main), memA)
+	if len(a.Accesses) != 1 || len(a.Accesses[0].Reloads) != maxAccesses || a.Ops["loaded"] != maxAccesses+20 {
+		t.Fatalf("reload cap: %d reloads, ops %v", len(a.Accesses[0].Reloads), a.Ops)
+	}
+}
+
+func TestToolEventPaths(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "s.jsonl")
+	write(t, main, jl(t,
+		toolUse(1, "u1", "toolu_1", "Edit", m{"file_path": "/a/b.go", "path": "/a", "old_string": "x"}),
+		toolUse(2, "u2", "toolu_2", "Bash", m{"command": "cd /a/b && go test ./..."}),
+		toolUse(3, "u3", "toolu_3", "Glob", m{"pattern": "*.go", "path": "/a/b.go"}),
+		toolUse(4, "u4", "toolu_4", "Read", m{"file_path": ""}),
+	))
+	ev := map[string]Event{}
+	for _, e := range parse(t, main).Events {
+		ev[e.ToolID] = e
+	}
+	if p := ev["toolu_1"].Paths; !reflect.DeepEqual(p, []string{"/a/b.go", "/a"}) || ev["toolu_1"].CmdPaths != nil {
+		t.Fatalf("edit: %+v", ev["toolu_1"])
+	}
+	if e := ev["toolu_2"]; e.Paths != nil || !reflect.DeepEqual(e.CmdPaths, []string{"/a/b", "./..."}) {
+		t.Fatalf("bash: %+v", e)
+	}
+	if p := ev["toolu_3"].Paths; !reflect.DeepEqual(p, []string{"/a/b.go"}) {
+		t.Fatalf("glob: %+v", p)
+	}
+	if ev["toolu_4"].Paths != nil {
+		t.Fatalf("empty path: %+v", ev["toolu_4"].Paths)
+	}
+}
+
+func TestCmdPaths(t *testing.T) {
+	long := ""
+	for i := 0; i < 100; i++ {
+		long += fmt.Sprintf(" /p/%d", i)
+	}
+	for _, tc := range []struct {
+		cmd  string
+		want []string
+	}{
+		{"cd /a/b && go test ./...", []string{"/a/b", "./..."}},
+		{"rg -n foo internal/x.go", []string{"internal/x.go"}},
+		{"cat > /tmp/out.txt <<EOF\nhello\nEOF", []string{"/tmp/out.txt"}},
+		{`sed -i 's/a/b/' "path with space/f.md"`, []string{"path with space/f.md"}},
+		{"cat <<-'EOF' > /tmp/o.txt\n\t/in/body.go\n\tEOF\nls /after/x", []string{"/tmp/o.txt", "/after/x"}},
+		{"cat > /tmp/out.txt <<\"END\"\n/in/body.go\nEND\nls /y.go", []string{"/tmp/out.txt", "/y.go"}},
+		{"git commit -m \"fix: update README.md and foo/bar\"", nil},
+		{"git commit -m '" + strings.Repeat("word /x/y ", 40) + "'", nil},
+		{"git commit -m 'a\nb/c.go'", nil},
+		{"FOO=/a/b make", []string{"/a/b"}},
+		{"docker run -v /a:/b img", []string{"/a", "/b"}},
+		{"PATH=/x/bin:/y/bin ls", []string{"/x/bin", "/y/bin"}},
+		{"echo a:b host:/c", []string{"host:/c"}},
+		{"sed -e 's|a|b|g' -e 's#x#y#' f.txt", []string{"f.txt"}},
+		{"ls src/s.txt", []string{"src/s.txt"}},
+		{"curl https://x.y/z.json", nil},
+		{"git log --oneline -5", nil},
+		{"echo v1.2.3", nil},
+		{"echo 1.2.3 3.14", nil},
+		{"ls -la ~/.claude/projects", []string{"~/.claude/projects"}},
+		{"go build --out=bin/csb ./cmd/csb 2>/dev/null; cat a.txt | head", []string{"bin/csb", "./cmd/csb", "/dev/null", "a.txt"}},
+		{"cp --to=/x/y a.txt a.txt", []string{"/x/y", "a.txt"}},
+		{`grep -r 'foo bar' src/: ,`, []string{"src/"}},
+		{`echo a\ b/c.go`, []string{"a b/c.go"}},
+		{"make test", nil},
+		{"", nil},
+	} {
+		if got := CmdPaths(tc.cmd); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("CmdPaths(%q) = %q, want %q", tc.cmd, got, tc.want)
+		}
+	}
+	if got := CmdPaths(long); len(got) != maxCmdPaths {
+		t.Errorf("cap: %d", len(got))
 	}
 }

@@ -1,8 +1,9 @@
 import { memo, useState } from 'react'
 import { Bot, ChevronDown, ChevronRight } from 'lucide-react'
 import { Collapsible, ToolCallDetail, ToolResultView } from '@/components/tool-call'
+import { ToolHits } from '@/components/tool-filter'
 import { callStatus, hasInput as hasInputValue, statusBg, useFullCall } from '@/lib/tool-call'
-import type { AgentInfo, SessionEvent, Usage } from '@/lib/api'
+import type { AgentInfo, SearchCall, SessionEvent, Usage } from '@/lib/api'
 import { time, tokens } from '@/lib/format'
 import { cn } from '@/lib/utils'
 
@@ -34,9 +35,10 @@ type RowProps = {
   showThinking: boolean
   toolInputs: boolean
   onOpenAgent: (id: string) => void
+  hits?: SearchCall
 }
 
-export const TranscriptRow = memo(function TranscriptRow({ e, agent, agentColor, sessionId, showThinking, toolInputs, onOpenAgent }: RowProps) {
+export const TranscriptRow = memo(function TranscriptRow({ e, agent, agentColor, sessionId, showThinking, toolInputs, onOpenAgent, hits }: RowProps) {
   const body = (() => {
     switch (e.kind) {
       case 'prompt':
@@ -74,7 +76,7 @@ export const TranscriptRow = memo(function TranscriptRow({ e, agent, agentColor,
           </div>
         )
       case 'tool_use':
-        return <ToolRow e={e} sessionId={sessionId} toolInputs={toolInputs} onOpenAgent={onOpenAgent} />
+        return <ToolRow e={e} sessionId={sessionId} toolInputs={toolInputs} onOpenAgent={onOpenAgent} hits={hits} />
       case 'compact':
         return <SystemLine label="context compacted" text={e.text} />
       case 'notification':
@@ -127,7 +129,7 @@ function SystemLine({ label, text, critical }: { label: string; text?: string; c
   )
 }
 
-function ToolRow({ e, sessionId, toolInputs, onOpenAgent }: { e: SessionEvent; sessionId: string; toolInputs: boolean; onOpenAgent: (id: string) => void }) {
+function ToolRow({ e, sessionId, toolInputs, onOpenAgent, hits }: { e: SessionEvent; sessionId: string; toolInputs: boolean; onOpenAgent: (id: string) => void; hits?: SearchCall }) {
   const [rowOpen, setRowOpen] = useState<boolean | null>(null)
   const call = useFullCall(sessionId, e.toolId)
   const r = e.result
@@ -169,6 +171,7 @@ function ToolRow({ e, sessionId, toolInputs, onOpenAgent }: { e: SessionEvent; s
           )}
         </div>
       </div>
+      <ToolHits call={hits} className="ml-4" />
       {open && (
         <div className="ml-4 rounded-md border bg-muted/30 p-2">
           <ToolCallDetail e={e} sessionId={sessionId} parts="input" call={call} />
